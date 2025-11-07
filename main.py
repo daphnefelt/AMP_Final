@@ -410,21 +410,27 @@ class InteractivePlanner:
         self.workspace_height = workspace_height
         self.cell_size = cell_size
         self.cbs = ConflictBasedSearch(grid, self.agents)
+
+        # Game state variables
+        self.current_solution = None
+        self.current_timestep = 0
+        self.game_over = False
+        self.animation_timer = None
         
         # Set up the figure
         self.fig, self.ax = plt.subplots(figsize=(12, 10))
         self.fig.canvas.mpl_connect('key_press_event', self.on_key_press)
         
         # Initialize containers for dynamic elements
-        self.agent_scatter_objects = {}  # Store scatter plot objects for each agent
-        self.agent_annotation_objects = {}  # Store text annotations
-        self.no_solution_text = None  # Store "No Solution" text object
-        
+        self.agent_current_positions = {}  # Current positions of agents
+        self.agent_position_objects = {}   # Visual objects for current positions
+        self.no_solution_text = None
+
         # Draw static background once
         self.setup_static_background()
         
         # Calculate and plot initial solution
-        self.update_solution()
+        self.calculate_new_solution()
         
     def world_to_grid(self, world_pos: Tuple[float, float]) -> Tuple[int, int]:
         """Convert world coordinates to grid coordinates."""
@@ -454,6 +460,9 @@ class InteractivePlanner:
     
     def on_key_press(self, event):
         """Handle keyboard input to move agent 1's goal."""
+        if self.game_over:
+            return
+        
         if event.key not in ['up', 'down', 'left', 'right']:
             return
             
@@ -475,38 +484,126 @@ class InteractivePlanner:
         # Check if new position is valid
         if self.is_valid_goal(new_goal):
             agent1.goal = new_goal
-            print(f"Agent 1 goal moved to: {new_goal} (world: {self.grid_to_world(new_goal)})")
-            self.update_solution()
+            self.draw_goal_marker()
+            self.calculate_new_solution()
         else:
             print(f"Invalid goal position: {new_goal}")
     
-    def update_solution(self):
-        """Recalculate the solution and update only the dynamic elements."""
+    def calculate_new_solution(self):
+        """Calculate a new solution when goal changes."""
         import time
         start_time = time.time()
+        
+        # Update agent start positions to their current positions
+        if hasattr(self, 'agent_current_positions') and self.agent_current_positions:
+            # Update each agent's start position to their current position
+            for agent in self.agents:
+                if agent.id in self.agent_current_positions:
+                    agent.start = self.agent_current_positions[agent.id]
         
         # Update the CBS with new agent configuration
         self.cbs = ConflictBasedSearch(self.grid, self.agents)
         solution = self.cbs.solve()
         
         calc_time = time.time() - start_time
+        print(f"New path calculated in {calc_time:.3f}s")
         
-        # Clear only dynamic elements (not the entire plot)
+        # Stop any existing animation
+        if self.animation_timer:
+            self.animation_timer.event_source.stop()
+        
+        # Clear dynamic elements
         self.clear_dynamic_elements()
         
         if solution is None:
             self.show_no_solution()
+            self.game_over = True
         else:
-            plot_start = time.time()
-            self.update_agent_paths(solution)
-            plot_time = time.time() - plot_start
-            print(f"Calculation: {calc_time:.3f}s, Plotting: {plot_time:.3f}s")
+            self.current_solution = solution
+            self.current_timestep = 0
+            self.game_over = False
+            
+            # Initialize agent positions to start positions (which are now current positions)
+            for agent_id, path in solution.items():
+                self.agent_current_positions[agent_id] = path[0]
+            
+            # Start the animation
+            self.start_animation()
         
-        # Update title with current info
-        self.ax.set_title(f'Interactive Multi-Agent Pathfinding\n(Use arrow keys to move Agent 1\'s goal - Resolution: {self.cell_size:.2f})')
+        # Update display
+        self.fig.canvas.draw_idle()
+
+    def start_animation(self):
+        """Start the timer for agent movement."""
+        from matplotlib.animation import FuncAnimation
         
-        # Refresh only what's needed
-        self.fig.canvas.draw_idle()  # More efficient than draw()
+        if self.game_over or not self.current_solution:
+            return
+        
+        # Create timer that calls update_agent_positions every X ms
+        self.animation_timer = FuncAnimation(self.fig, self.update_agent_positions, 
+                                        interval=100, repeat=True, blit=False)
+
+    def update_agent_positions(self, frame):
+        """Move agents one step forward in their paths."""
+        if self.game_over or not self.current_solution:
+            return
+        
+        self.current_timestep += 1
+        
+        # Update each agent's position
+        all_at_goal = True
+        for agent_id, path in self.current_solution.items():
+            if self.current_timestep < len(path):
+                self.agent_current_positions[agent_id] = path[self.current_timestep]
+                all_at_goal = False
+            else:
+                # Agent has reached the end of path, stay at goal
+                self.agent_current_positions[agent_id] = path[-1]
+        
+        # Update the visual representation
+        self.update_agent_visuals()
+        self.draw_goal_marker()
+        
+        # Check win/lose conditions
+        if all_at_goal:
+            self.end_game("GAME OVER - Agent reached the goal! You lost!")
+        
+        print(f"Timestep: {self.current_timestep}")
+
+    def draw_goal_marker(self):
+        """Draw the goal position that the user is controlling."""
+        # Get Agent 1's goal position
+        agent1 = next(a for a in self.agents if a.id == 1)
+        goal_pos = agent1.goal
+        
+        # Convert to world coordinates
+        world_x = (goal_pos[1] + 0.5) * self.cell_size
+        world_y = (goal_pos[0] + 0.5) * self.cell_size
+        
+        # Remove existing goal marker if it exists
+        if hasattr(self, 'goal_marker') and self.goal_marker:
+            self.goal_marker.remove()
+        
+        # Draw goal as a large square with distinctive appearance
+        self.goal_marker = self.ax.scatter(world_x, world_y, c='gold', s=600, 
+                                        marker='s', edgecolors='black', linewidth=3,
+                                        zorder=15, alpha=0.9, label='Goal (Move with arrows)')
+
+    def end_game(self, message):
+        """End the game with a message."""
+        self.game_over = True
+        
+        if self.animation_timer:
+            self.animation_timer.event_source.stop()
+        
+        # Display game over message
+        self.ax.text(0.5, 0.5, message, transform=self.ax.transAxes, 
+                    ha='center', va='center', fontsize=20, color='red', 
+                    fontweight='bold', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        print(f"\n{message}")
+        self.fig.canvas.draw_idle()
 
     def setup_static_background(self):
         """Set up static elements that don't change (obstacles, grid, labels)."""
@@ -534,162 +631,74 @@ class InteractivePlanner:
         self.ax.set_aspect('equal')
         self.ax.grid(True, alpha=0.3)
         self.ax.invert_yaxis()
+
+        # Draw the initial goal marker
+        self.goal_marker = None
+        self.goal_text = None
+        self.draw_goal_marker()
         
-        # Add static instruction text
-        instruction_text = "Use arrow keys to move Agent 1's goal (big circle)"
-        self.ax.text(0.02, 0.98, instruction_text, transform=self.ax.transAxes,
-                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
-    
-    def plot_solution(self, solution):
-        """Plot the current solution."""
-        # Plot original obstacle polygons
-        if self.obstacles:
-            for obstacle in self.obstacles:
-                vertices = np.array(obstacle.vertices + [obstacle.vertices[0]])
-                self.ax.plot(vertices[:, 0], vertices[:, 1], 'k-', linewidth=2, alpha=0.7)
-                self.ax.fill(vertices[:, 0], vertices[:, 1], color='gray', alpha=0.3)
+        # Add game instructions
+        instruction_text = "GAME: Use arrows to move Agent 1's goal (circle)\nDon't let the agent reach the goal!"
+        self.ax.text(0.02, 0.02, instruction_text, transform=self.ax.transAxes,
+                    verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.8))
         
-        # Plot grid obstacles
-        for i, row in enumerate(self.grid):
-            for j, cell in enumerate(row):
-                if cell == 1:
-                    world_x = j * self.cell_size
-                    world_y = i * self.cell_size
-                    self.ax.add_patch(plt.Rectangle((world_x, world_y), self.cell_size, self.cell_size, 
-                                                   facecolor='red', alpha=0.4, edgecolor='red'))
-        
-        # Define colors and offsets for agents
-        agent_colors = ['blue', 'red', 'green', 'purple', 'orange']
-        agent_offsets = [(-0.02, -0.02), (0.02, 0.02), (-0.02, 0.02), (0.02, -0.02), (0, 0)]
-        
-        # Plot paths for each agent
-        max_time = max(len(path) for path in solution.values()) if solution else 0
-        
-        for agent_id, path in solution.items():
-            agent_color = agent_colors[agent_id % len(agent_colors)]
-            
-            # Convert grid coordinates to world coordinates
-            x_coords = [(pos[1] + 0.5) * self.cell_size + agent_offsets[agent_id][0] for pos in path]
-            y_coords = [(pos[0] + 0.5) * self.cell_size + agent_offsets[agent_id][1] for pos in path]
-            
-            # Create color map for time progression
-            times = np.arange(len(path))
-            colors = plt.cm.plasma(times / max(times)) if len(times) > 1 else [agent_color]
-            
-            # Plot each timestep as individual dots
-            for i, (x, y) in enumerate(zip(x_coords, y_coords)):
-                if i == 0:  # Start position
-                    marker, size, edgecolor, linewidth = 's', 300, 'black', 3
-                    label = f'Agent {agent_id} Start'
-                elif i == len(path) - 1:  # Goal position
-                    if agent_id == 1:  # Special handling for agent 1's goal (big circle)
-                        marker, size, edgecolor, linewidth = 'o', 800, 'black', 4
-                    else:
-                        marker, size, edgecolor, linewidth = 's', 400, 'black', 3
-                    label = f'Agent {agent_id} Goal'
-                else:  # Intermediate positions
-                    marker, size, edgecolor, linewidth = 'o', 150, 'white', 1
-                    label = None
-                
-                self.ax.scatter(x, y, c=[colors[i]], s=size, marker=marker,
-                               edgecolors=edgecolor, linewidth=linewidth,
-                               label=label, zorder=5, alpha=0.8)
-                
-                # Add timestep number
-                self.ax.annotate(str(i), (x, y), ha='center', va='center',
-                               fontsize=8, fontweight='bold',
-                               color='white' if marker == 'o' and i != len(path) - 1 or agent_id != 1 else 'black')
-        
-        # Set up plot appearance
-        self.ax.set_xlim(0, self.workspace_width)
-        self.ax.set_ylim(0, self.workspace_height)
-        self.ax.set_xlabel('X (world coordinates)')
-        self.ax.set_ylabel('Y (world coordinates)')
-        self.ax.set_title(f'Interactive Multi-Agent Pathfinding\n(Use arrow keys to move Agent 1\'s goal - Resolution: {self.cell_size:.2f})')
-        self.ax.set_aspect('equal')
-        self.ax.grid(True, alpha=0.3)
-        self.ax.invert_yaxis()
-        
-        # Add instructions
-        instruction_text = "Use arrow keys to move Agent 1's goal (big circle)"
-        self.ax.text(0.02, 0.98, instruction_text, transform=self.ax.transAxes,
-                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
-    
     def clear_dynamic_elements(self):
-        """Remove only the dynamic elements (agent paths, annotations)."""
-        # Remove agent scatter plots
-        for agent_id, scatter_list in self.agent_scatter_objects.items():
-            for scatter in scatter_list:
-                scatter.remove()
-        self.agent_scatter_objects.clear()
-        
-        # Remove annotations
-        for agent_id, annotation_list in self.agent_annotation_objects.items():
-            for annotation in annotation_list:
-                annotation.remove()
-        self.agent_annotation_objects.clear()
+        """Remove only the dynamic elements (current agent positions)."""
+        # Remove agent position objects
+        for agent_id, pos_obj in self.agent_position_objects.items():
+            if pos_obj:
+                pos_obj.remove()
+        self.agent_position_objects.clear()
         
         # Remove no solution text if it exists
         if self.no_solution_text:
             self.no_solution_text.remove()
             self.no_solution_text = None
 
+    def update_agent_visuals(self):
+        """Update the visual representation of current agent positions."""
+        # Clear existing position objects
+        for agent_id, pos_obj in self.agent_position_objects.items():
+            if pos_obj:
+                pos_obj.remove()
+        
+        # Define colors for agents
+        agent_colors = ['blue', 'red', 'green', 'purple', 'orange']
+        
+        # Draw current positions
+        for agent_id, grid_pos in self.agent_current_positions.items():
+            agent_color = agent_colors[agent_id % len(agent_colors)]
+            
+            # Convert grid to world coordinates
+            world_x = (grid_pos[1] + 0.5) * self.cell_size
+            world_y = (grid_pos[0] + 0.5) * self.cell_size
+            
+            # Create square marker for current position
+            if agent_id == 1:
+                # Special large circle for agent 1 (the one we control)
+                marker, size, edgecolor = 'o', 400, 'black'
+            else:
+                # Square for other agents
+                marker, size, edgecolor = 's', 300, 'black'
+            
+            pos_obj = self.ax.scatter(world_x, world_y, c=agent_color, s=size, 
+                                    marker=marker, edgecolors=edgecolor, linewidth=3,
+                                    zorder=10, alpha=0.9)
+            
+            self.agent_position_objects[agent_id] = pos_obj
+            
+            # Add agent ID label
+            self.ax.annotate(str(agent_id), (world_x, world_y), ha='center', va='center',
+                            fontsize=12, fontweight='bold', color='white')
+        
+        # Update display
+        self.fig.canvas.draw_idle()
+
     def show_no_solution(self):
         """Display no solution message."""
         self.no_solution_text = self.ax.text(0.5, 0.5, 'No Solution Found!', 
                                             transform=self.ax.transAxes, ha='center', va='center',
                                             fontsize=16, color='red', fontweight='bold')
-
-    def update_agent_paths(self, solution):
-        """Update only the agent path visualizations."""
-        # Define colors and offsets for agents
-        agent_colors = ['blue', 'red', 'green', 'purple', 'orange']
-        agent_offsets = [(-0.02, -0.02), (0.02, 0.02), (-0.02, 0.02), (0.02, -0.02), (0, 0)]
-        
-        # Plot paths for each agent
-        max_time = max(len(path) for path in solution.values()) if solution else 0
-        
-        for agent_id, path in solution.items():
-            agent_color = agent_colors[agent_id % len(agent_colors)]
-            
-            # Initialize lists for this agent
-            self.agent_scatter_objects[agent_id] = []
-            self.agent_annotation_objects[agent_id] = []
-            
-            # Convert grid coordinates to world coordinates
-            x_coords = [(pos[1] + 0.5) * self.cell_size + agent_offsets[agent_id][0] for pos in path]
-            y_coords = [(pos[0] + 0.5) * self.cell_size + agent_offsets[agent_id][1] for pos in path]
-            
-            # Create color map for time progression
-            times = np.arange(len(path))
-            colors = plt.cm.plasma(times / max(times)) if len(times) > 1 else [agent_color]
-            
-            # Plot each timestep as individual dots
-            for i, (x, y) in enumerate(zip(x_coords, y_coords)):
-                if i == 0:  # Start position
-                    marker, size, edgecolor, linewidth = 's', 300, 'black', 3
-                    label = f'Agent {agent_id} Start'
-                elif i == len(path) - 1:  # Goal position
-                    if agent_id == 1:  # Special handling for agent 1's goal (big circle)
-                        marker, size, edgecolor, linewidth = 'o', 800, 'black', 4
-                    else:
-                        marker, size, edgecolor, linewidth = 's', 400, 'black', 3
-                    label = f'Agent {agent_id} Goal'
-                else:  # Intermediate positions
-                    marker, size, edgecolor, linewidth = 'o', 150, 'white', 1
-                    label = None
-                
-                # Create scatter plot
-                scatter = self.ax.scatter(x, y, c=[colors[i]], s=size, marker=marker,
-                                    edgecolors=edgecolor, linewidth=linewidth,
-                                    label=label, zorder=5, alpha=0.8)
-                self.agent_scatter_objects[agent_id].append(scatter)
-                
-                # Add timestep number annotation
-                annotation = self.ax.annotate(str(i), (x, y), ha='center', va='center',
-                                            fontsize=8, fontweight='bold',
-                                            color='white' if marker == 'o' and i != len(path) - 1 or agent_id != 1 else 'black')
-                self.agent_annotation_objects[agent_id].append(annotation)
 
     def show(self):
         """Display the interactive plot."""
