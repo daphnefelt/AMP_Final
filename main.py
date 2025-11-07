@@ -16,10 +16,7 @@ class Obstacle:
     vertices: List[Tuple[float, float]]
 
 def point_in_convex_polygon(point: Tuple[float, float], vertices: List[Tuple[float, float]]) -> bool:
-    """
-    Check if a point is inside a convex polygon using the cross product method.
-    Assumes vertices are ordered (clockwise or counterclockwise).
-    """
+    # Check if a point is inside a convex polygon using the cross product method. Assumes vertices are ordered
     x, y = point
     n = len(vertices)
     
@@ -44,32 +41,15 @@ def point_in_convex_polygon(point: Tuple[float, float], vertices: List[Tuple[flo
 
 def create_grid_from_obstacles(workspace_width: float, workspace_height: float, 
                               resolution: float, obstacles: List[Obstacle]) -> Tuple[List[List[int]], float]:
-    """
-    Create a grid where cells that intersect with any obstacle are marked as 1.
-    
-    Args:
-        workspace_width: Width of the workspace in world coordinates
-        workspace_height: Height of the workspace in world coordinates
-        resolution: Size of each grid cell in world coordinates
-        obstacles: List of convex obstacles defined by vertices
-    
-    Returns:
-        Tuple of (grid, actual_cell_size) where:
-        - grid: 2D grid where 0 = free space, 1 = obstacle
-        - actual_cell_size: The actual cell size used (may be slightly adjusted)
-    """
+    # makes grid of 1s and 0s representing obstacles from convex polygons
+ 
     # Calculate grid dimensions based on workspace size and resolution
     grid_width = int(np.ceil(workspace_width / resolution))
     grid_height = int(np.ceil(workspace_height / resolution))
     
-    # Calculate actual cell size (may be slightly different due to rounding)
+    # Calculate actual cell size
     actual_cell_size_x = workspace_width / grid_width
     actual_cell_size_y = workspace_height / grid_height
-    
-    print(f"Workspace: {workspace_width} x {workspace_height}")
-    print(f"Grid dimensions: {grid_width} x {grid_height}")
-    print(f"Requested resolution: {resolution}")
-    print(f"Actual cell size: {actual_cell_size_x:.3f} x {actual_cell_size_y:.3f}")
     
     grid = [[0 for _ in range(grid_width)] for _ in range(grid_height)]
     
@@ -84,11 +64,12 @@ def create_grid_from_obstacles(workspace_width: float, workspace_height: float,
                 if point_in_convex_polygon((cell_center_x, cell_center_y), obstacle.vertices):
                     grid[row][col] = 1
                     break
-    
+
     return grid, actual_cell_size_x
 
 def create_sample_problem_with_obstacles():
-    """Create a sample problem with convex obstacles defined by vertices."""
+    # Just makes an example problem with convex polygon obstacles
+
     # Define workspace dimensions (in world coordinates)
     workspace_width = 20.0
     workspace_height = 15.0
@@ -96,7 +77,7 @@ def create_sample_problem_with_obstacles():
     # Define discretization resolution (cell size in world coordinates)
     resolution = 0.25  # Each grid cell represents X x X world units
     
-    # Define obstacles as convex polygons (in world coordinates)
+    # Makes some obstacles as convex polygons (in world coordinates)
     obstacles = [
         # Rectangular obstacle in the upper left
         Obstacle(vertices=[(2.0, 0), (6.0, 0), (6.0, 4.0), (2.0, 4.0)]),
@@ -115,7 +96,6 @@ def create_sample_problem_with_obstacles():
     grid, cell_size = create_grid_from_obstacles(workspace_width, workspace_height, 
                                                 resolution, obstacles)
     
-    # Create agents (positions in grid coordinates)
     # Convert world coordinates to grid coordinates
     def world_to_grid(world_pos: Tuple[float, float]) -> Tuple[int, int]:
         x, y = world_pos
@@ -123,6 +103,7 @@ def create_sample_problem_with_obstacles():
         grid_y = int(y / cell_size)
         return (grid_y, grid_x)  # Note: (row, col) format for grid
     
+    # Create agents (positions in grid coordinates)
     agents = [
         Agent(id=0, start=world_to_grid((1.0, 1.0)), goal=world_to_grid((18.0, 13.0))),  # Agent 0
         Agent(id=1, start=world_to_grid((18.0, 1.0)), goal=world_to_grid((1.0, 13.0))),   # Agent 1
@@ -133,7 +114,7 @@ def create_sample_problem_with_obstacles():
 
 @dataclass
 class Constraint:
-    """Represents a constraint on an agent's movement."""
+    # Constraint on agent movement
     agent_id: int
     time: int
     position: Tuple[float, float]
@@ -141,7 +122,7 @@ class Constraint:
 
 @dataclass
 class CBSNode:
-    """Node in the CBS high-level search tree."""
+    # Node in the CBS high-level search tree.
     constraints: List[Constraint]
     solution: Dict[int, List[Tuple[int, int]]]
     cost: int
@@ -150,8 +131,8 @@ class CBSNode:
         return self.cost < other.cost
 
 class ConflictBasedSearch:
-    """Conflict Based Search algorithm for multi-agent pathfinding."""
-    
+    # Conflict Based Search algorithm for multi-agent pathfinding.
+
     def __init__(self, grid: List[List[int]], agents: List[Agent]):
         self.grid = grid
         self.agents = agents
@@ -159,18 +140,18 @@ class ConflictBasedSearch:
         self.cols = len(grid[0]) if grid else 0
         
     def is_valid_position(self, pos: Tuple[int, int]) -> bool:
-        """Check if a position is valid (within bounds and not an obstacle)."""
+        # Check if a position is valid (within bounds and not an obstacle).
         row, col = pos
         return (0 <= row < self.rows and 
                 0 <= col < self.cols and 
                 self.grid[row][col] == 0)
     
     def get_neighbors(self, pos: Tuple[int, int]) -> List[Tuple[int, int]]:
-        """Get valid neighboring positions (including staying in place)."""
+        # Get valid neighboring positions (including staying in place).
         row, col = pos
         neighbors = []
         
-        # Add current position (wait action)
+        # Add current position (if just want to wait)
         neighbors.append((row, col))
         
         # Add adjacent positions (up, down, left, right)
@@ -182,7 +163,7 @@ class ConflictBasedSearch:
         return neighbors
     
     def heuristic(self, pos: Tuple[int, int], goal: Tuple[int, int]) -> int:
-        """Manhattan distance heuristic."""
+        # Manhattan distance heuristic.
         return abs(pos[0] - goal[0]) + abs(pos[1] - goal[1])
     
     def low_level_search(self, agent: Agent, constraints: List[Constraint]) -> Optional[List[Tuple[int, int]]]:
@@ -232,10 +213,7 @@ class ConflictBasedSearch:
         return None  # No path found
     
     def detect_conflicts(self, solution: Dict[int, List[Tuple[int, int]]]) -> List[Tuple[int, int, int, Tuple[int, int]]]:
-        """
-        Detect vertex conflicts in the solution.
-        Returns list of conflicts: (agent1_id, agent2_id, time, position)
-        """
+        # Find list of all vertex conflicts in a given solution: (agent1_id, agent2_id, time, position)
         conflicts = []
         
         # Find maximum path length
@@ -262,11 +240,9 @@ class ConflictBasedSearch:
         return conflicts
     
     def solve(self) -> Optional[Dict[int, List[Tuple[int, int]]]]:
-        """
-        Main CBS algorithm.
-        Returns the solution or None if no solution exists.
-        """
-        # Initialize root node
+        # MAIN CBS ALGORITHM
+
+        # init root node
         root = CBSNode(constraints=[], solution={}, cost=0)
         
         # Find initial solution without constraints
@@ -320,44 +296,11 @@ class ConflictBasedSearch:
         
         return None  # No solution found
 
-def create_sample_problem():
-    """Create a sample problem with 2 agents."""
-    # Create a simple grid (0 = free, 1 = obstacle)
-    grid = [
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 1, 1, 1, 0, 0, 0, 0, 0, 0],
-        [0, 1, 0, 0, 0, 0, 0, 0, 1, 0],
-        [0, 1, 0, 1, 0, 1, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 1, 0, 1, 0, 0, 0, 1, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    ]
-    
-    # Create agents
-    agents = [
-        Agent(id=0, start=(0, 0), goal=(4, 9)),  # Agent 0: top-left to bottom-right
-        Agent(id=1, start=(4, 0), goal=(0, 8))   # Agent 1: bottom-left to top-right
-    ]
-    
-    return grid, agents
-
-def print_solution(solution: Dict[int, List[Tuple[int, int]]], grid: List[List[int]]):
-    """Print the solution in a readable format."""
-    if solution is None:
-        print("No solution found!")
-        return
-    
-    print("Solution found!")
-    print("\nPaths:")
-    for agent_id, path in solution.items():
-        print(f"Agent {agent_id}: {path}")
-
-    print("\n")
-
 def plot_solution(solution: Dict[int, List[Tuple[int, int]]], grid: List[List[int]], 
                  obstacles: List[Obstacle] = None, workspace_width: float = None, 
                  workspace_height: float = None, cell_size: float = 1.0):
-    """Create a matplotlib visualization of the solution with time-colored paths."""
+
+    # Create a matplotlib visualization of the solution with time-colored paths.
     if solution is None:
         print("No solution to plot!")
         return
@@ -457,33 +400,17 @@ def plot_solution(solution: Dict[int, List[Tuple[int, int]]], grid: List[List[in
     plt.show()
 
 def main():
-    """Main function to run the CBS algorithm."""
     print("Conflict Based Search - Multi-Agent Pathfinding")
-    print("=" * 50)
+    print("-" * 50)
     
     # Create sample problem with convex obstacles
     grid, agents, obstacles, workspace_width, workspace_height, cell_size = create_sample_problem_with_obstacles()
-    
-    print("Obstacles (defined by vertices in world coordinates):")
-    for i, obstacle in enumerate(obstacles):
-        print(f"Obstacle {i}: {obstacle.vertices}")
-    
-    print(f"\nWorkspace: {workspace_width} x {workspace_height} (world units)")
-    print(f"Cell size: {cell_size:.3f}")
-    print(f"Grid dimensions: {len(grid[0])} x {len(grid)}")
-    
-    print(f"\nAgents (grid coordinates):")
-    for agent in agents:
-        print(f"Agent {agent.id}: Start {agent.start} -> Goal {agent.goal}")
     
     # Solve using CBS
     cbs = ConflictBasedSearch(grid, agents)
     solution = cbs.solve()
     
     print("DONE")
-    # Print solution
-    # print("\n" + "=" * 50)
-    # print_solution(solution, grid)
     
     # Plot solution with original obstacles
     plot_solution(solution, grid, obstacles, workspace_width, workspace_height, cell_size)
