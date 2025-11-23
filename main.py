@@ -107,7 +107,7 @@ def create_sample_problem_with_obstacles():
     agents = [
         #Agent(id=0, start=world_to_grid((1.0, 1.0)), goal=world_to_grid((18.0, 13.0))),  # Agent 0
         Agent(id=1, start=world_to_grid((18.0, 1.0)), goal=world_to_grid((1.0, 13.0))),   # Agent 1
-        #Agent(id=2, start=world_to_grid((15.0, 1.0)), goal=world_to_grid((1.0, 12.0)))   # Agent 2
+        Agent(id=2, start=world_to_grid((15.0, 1.0)), goal=world_to_grid((1.0, 1.0)))   # Agent 2
     ]
     
     return grid, agents, obstacles, workspace_width, workspace_height, cell_size
@@ -472,14 +472,15 @@ class InteractivePlanner:
         
         # Calculate new goal position
         row, col = current_goal
+        speed = 4
         if event.key == 'up':
-            new_goal = (row - 1, col)
+            new_goal = (row - speed, col)
         elif event.key == 'down':
-            new_goal = (row + 1, col)
+            new_goal = (row + speed, col)
         elif event.key == 'left':
-            new_goal = (row, col - 1)
+            new_goal = (row, col - speed)
         elif event.key == 'right':
-            new_goal = (row, col + 1)
+            new_goal = (row, col + speed)
         
         # Check if new position is valid
         if self.is_valid_goal(new_goal):
@@ -502,11 +503,12 @@ class InteractivePlanner:
                     agent.start = self.agent_current_positions[agent.id]
         
         # Update the CBS with new agent configuration
+        prev_solution = self.current_solution
         self.cbs = ConflictBasedSearch(self.grid, self.agents)
         solution = self.cbs.solve()
         
         calc_time = time.time() - start_time
-        print(f"New path calculated in {calc_time:.3f}s")
+        print(f"New path calculated in {calc_time:.20f}s")
         
         # Stop any existing animation
         if self.animation_timer:
@@ -568,8 +570,6 @@ class InteractivePlanner:
         # Check win/lose conditions
         if all_at_goal:
             self.end_game("GAME OVER - Agent reached the goal! You lost!")
-        
-        print(f"Timestep: {self.current_timestep}")
 
     def draw_goal_marker(self):
         """Draw the goal position that the user is controlling."""
@@ -637,11 +637,6 @@ class InteractivePlanner:
         self.goal_text = None
         self.draw_goal_marker()
         
-        # Add game instructions
-        instruction_text = "GAME: Use arrows to move Agent 1's goal (circle)\nDon't let the agent reach the goal!"
-        self.ax.text(0.02, 0.02, instruction_text, transform=self.ax.transAxes,
-                    verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.8))
-        
     def clear_dynamic_elements(self):
         """Remove only the dynamic elements (current agent positions)."""
         # Remove agent position objects
@@ -686,10 +681,6 @@ class InteractivePlanner:
                                     zorder=10, alpha=0.9)
             
             self.agent_position_objects[agent_id] = pos_obj
-            
-            # Add agent ID label
-            self.ax.annotate(str(agent_id), (world_x, world_y), ha='center', va='center',
-                            fontsize=12, fontweight='bold', color='white')
         
         # Update display
         self.fig.canvas.draw_idle()
@@ -710,19 +701,10 @@ def main():
     print("-" * 50)
     
     # Create sample problem with convex obstacles
-    grid, agents, obstacles, workspace_width, workspace_height, cell_size = create_sample_problem_with_obstacles()
+    # grid, agents, obstacles, workspace_width, workspace_height, cell_size = create_sample_problem_with_obstacles()
     
-    # Solve using CBS
-    # cbs = ConflictBasedSearch(grid, agents)
-    # solution = cbs.solve()
-    
-    # print("DONE")
-    
-    # Plot solution with original obstacles
-    # plot_solution(solution, grid, obstacles, workspace_width, workspace_height, cell_size)
-    
-    planner = InteractivePlanner(grid, agents, obstacles, workspace_width, workspace_height, cell_size)
-    planner.show()
+    # planner = InteractivePlanner(grid, agents, obstacles, workspace_width, workspace_height, cell_size)
+    # planner.show()
 
 if __name__ == "__main__":
     main()
