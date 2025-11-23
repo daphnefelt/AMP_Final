@@ -5,11 +5,11 @@ from main import ConflictBasedSearch
 from main import create_sample_problem_with_obstacles
 
 def benchmark_cbs(grid, agents, num_moves=100, goal_step=2):
-
     working_agents = _deepcopy(agents)
+    
     # Build initial solution
     cbs = ConflictBasedSearch(grid, working_agents)
-    solution = cbs.solve()
+    solution = cbs.solve()  # No previous solution on first run
     if solution is None:
         return {'moves_executed':0,'avg_time':None,'min_time':None,'max_time':None,'all_times':[]}
     
@@ -20,22 +20,26 @@ def benchmark_cbs(grid, agents, num_moves=100, goal_step=2):
     directions = ['up','down','left','right']
     
     initial_snapshot = _deepcopy(working_agents)
-    while moves_executed < num_moves:
+    
+    for _ in range(num_moves):
         # Advance simulated time one step along paths
         max_len = max(len(p) for p in solution.values())
         if timestep + 1 < max_len:
             timestep += 1
             for aid, path in solution.items():
                 current_positions[aid] = path[timestep] if timestep < len(path) else path[-1]
+        
         # Restart if any agent at its goal
         if any(current_positions[a.id] == a.goal for a in working_agents):
             working_agents = _deepcopy(initial_snapshot)
             cbs = ConflictBasedSearch(grid, working_agents)
-            solution = cbs.solve()
+            solution = cbs.solve()  # Fresh start, no previous solution
             if solution is None:
                 break
             current_positions = {aid: path[0] for aid, path in solution.items()}
             timestep = 0
+            continue  # Skip to next iteration
+        
         # Random goal move for agent 1
         a1 = next(a for a in working_agents if a.id == 1)
         gr,gc = a1.goal
@@ -44,29 +48,39 @@ def benchmark_cbs(grid, agents, num_moves=100, goal_step=2):
         elif d == 'down': new_goal = (gr+goal_step, gc)
         elif d == 'left': new_goal = (gr, gc-goal_step)
         else: new_goal = (gr, gc+goal_step)
+        
         if not cbs.is_valid_position(new_goal):
             continue
-        # Update starts
+        
+        # Update starts to current positions
         for ag in working_agents:
             ag.start = current_positions[ag.id]
         a1.goal = new_goal
+        
+        # Store previous solution before recomputing
+        previous_solution = _deepcopy(solution)
+        
         start = time.perf_counter()
         cbs = ConflictBasedSearch(grid, working_agents)
-        solution_new = cbs.solve()
+        solution_new = cbs.solve(previous_solution=previous_solution)  # Pass old solution
         elapsed = time.perf_counter() - start
+        print(f"Recomputed CBS solution in {elapsed:.6f}s for new goal {a1.goal}")
+        
         if solution_new is None:
             # revert if unsolvable
             a1.goal = (gr,gc)
             cbs = ConflictBasedSearch(grid, working_agents)
-            solution_new = cbs.solve()
+            solution_new = cbs.solve(previous_solution=previous_solution)
             if solution_new is None:
                 break
             continue
+        
         solution = solution_new
         times.append(elapsed)
         moves_executed += 1
         timestep = 0
         current_positions = {aid: path[0] for aid, path in solution.items()}
+    
     return {
         'moves_executed': moves_executed,
         'avg_time': (sum(times)/len(times)) if times else None,

@@ -239,41 +239,45 @@ class ConflictBasedSearch:
         
         return conflicts
     
-    def solve(self) -> Optional[Dict[int, List[Tuple[int, int]]]]:
-        # MAIN CBS ALGORITHM
-
-        # init root node
+    def solve(self, previous_solution: Optional[Dict[int, List[Tuple[int, int]]]] = None) -> Optional[Dict[int, List[Tuple[int, int]]]]:
+        """
+        MAIN CBS ALGORITHM with optional path reuse optimization.
+        
+        Parameters:
+            previous_solution: Optional previous solution dict to reuse paths when possible
+        """
+        # If we have a previous solution, try to reuse paths intelligently
+        if previous_solution is not None:
+            optimized_solution = self._try_optimize_paths(previous_solution)
+            if optimized_solution is not None:
+                print("Successfully optimized paths from previous solution")
+                return optimized_solution
+            
+        print("Falling back to full CBS recompute")
+        
+        # Standard CBS from scratch
         root = CBSNode(constraints=[], solution={}, cost=0)
         
-        # Find initial solution without constraints
         for agent in self.agents:
             path = self.low_level_search(agent, [])
             if path is None:
-                return None  # No solution possible
+                return None
             root.solution[agent.id] = path
         
-        # Calculate initial cost (sum of path lengths)
         root.cost = sum(len(path) for path in root.solution.values())
-        
-        # Initialize open list
         open_list = [root]
         heapq.heapify(open_list)
         
         while open_list:
             current = heapq.heappop(open_list)
-            
-            # Detect conflicts
             conflicts = self.detect_conflicts(current.solution)
             
             if not conflicts:
-                # No conflicts, solution found
                 return current.solution
             
-            # Take the first conflict and create child nodes
             conflict = conflicts[0]
             agent1_id, agent2_id, time, position = conflict
             
-            # Create two child nodes with constraints
             for constrained_agent in [agent1_id, agent2_id]:
                 child = CBSNode(
                     constraints=deepcopy(current.constraints),
@@ -281,11 +285,9 @@ class ConflictBasedSearch:
                     cost=0
                 )
                 
-                # Add constraint
                 constraint = Constraint(constrained_agent, time, position)
                 child.constraints.append(constraint)
                 
-                # Replan for the constrained agent
                 constrained_agent_obj = next(a for a in self.agents if a.id == constrained_agent)
                 new_path = self.low_level_search(constrained_agent_obj, child.constraints)
                 
@@ -294,7 +296,244 @@ class ConflictBasedSearch:
                     child.cost = sum(len(path) for path in child.solution.values())
                     heapq.heappush(open_list, child)
         
-        return None  # No solution found
+        return None
+
+    def _try_optimize_paths(self, previous_solution: Dict[int, List[Tuple[int, int]]]) -> Optional[Dict[int, List[Tuple[int, int]]]]:
+        # try to reuse previous paths and just recompute the end parts
+        optimized = {}
+        
+        for agent in self.agents:
+            old_path = previous_solution[agent.id]
+
+            # First, find where to clip the front based on new start position bc the agent keeps moving forward along old path
+            start_clip_index = self._find_path_clip_point(agent.start, old_path)
+            if start_clip_index is None:
+                print("New start not on old path")
+                return None  # New start not on old path
+            # Clip the front of the path
+            old_path = old_path[start_clip_index:]
+
+            # grab old start and goal
+            old_start = old_path[0]
+            old_goal = old_path[-1]
+            
+            # If goal never changed, reuse entire path once clipping the start
+            if agent.goal == old_goal:
+                optimized[agent.id] = old_path
+                continue
+
+            # check if obstacle crossing sides changed. If it did, we need full recompute because path topology might change
+            if self._obstacle_crossing_changed(old_start, old_goal, agent.start, agent.goal):
+                print("Obstacle crossing side changed for agent", agent.id)
+                return None  # Full recompute needed
+            
+            # partial recompute from radius R around new goal
+            recompute_path = self._partial_recompute(agent, old_path, 5) # search radius 5, even though only move 4 at a time
+            if recompute_path is None:
+                return None  # Fall back
+            
+            # Cleaning up path, check for opposing directions
+            cleaned_path = self._remove_opposing_directions(recompute_path, agent)
+            if cleaned_path is None:
+                return None  # Fall back
+            optimized[agent.id] = cleaned_path
+        
+        # Final check, no conflicts in optimized solution
+        conflicts = self.detect_conflicts(optimized)
+        if conflicts:
+            print("Conflicts detected in optimized solution")
+            return None  # Fall back to full CBS
+        
+        return optimized
+
+    def _obstacle_crossing_changed(self, old_start: Tuple[int, int], old_goal: Tuple[int, int],
+                                    new_start: Tuple[int, int], new_goal: Tuple[int, int]) -> bool:
+        """Check if line from start to goal crosses obstacles on different sides."""
+        # Get obstacle centers and check crossing sides
+        old_crossings = self._get_obstacle_crossings(old_start, old_goal)
+        new_crossings = self._get_obstacle_crossings(new_start, new_goal)
+        
+        # If any obstacle crossing side changed, need full recompute
+        for obs_idx in old_crossings:
+            if obs_idx in new_crossings and old_crossings[obs_idx] != new_crossings[obs_idx]:
+                return True
+        
+        return False
+
+    def _get_obstacle_crossings(self, start: Tuple[int, int], goal: Tuple[int, int]) -> Dict[Tuple[int,int], str]:
+        """Returns dict of obstacle centers -> 'left'/'right' indicating which side line crosses."""
+        crossings = {}
+        
+        # Find all obstacle cells and their approximate centers
+        obstacle_clusters = self._find_obstacle_clusters()
+        
+        for center, cells in obstacle_clusters.items():
+            side = self._line_crosses_obstacle_side(start, goal, center)
+            if side:
+                crossings[center] = side
+        
+        return crossings
+
+    def _find_obstacle_clusters(self) -> Dict[Tuple[int, int], List[Tuple[int, int]]]:
+        """Find obstacle centers of mass. Returns dict: center -> list of cells."""
+        visited = set()
+        clusters = {}
+        
+        for r in range(self.rows):
+            for c in range(self.cols):
+                if self.grid[r][c] == 1 and (r, c) not in visited:
+                    # BFS to find connected obstacle
+                    cluster = []
+                    queue = [(r, c)]
+                    visited.add((r, c))
+                    
+                    while queue:
+                        cr, cc = queue.pop(0)
+                        cluster.append((cr, cc))
+                        
+                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                            nr, nc = cr + dr, cc + dc
+                            if (0 <= nr < self.rows and 0 <= nc < self.cols and
+                                self.grid[nr][nc] == 1 and (nr, nc) not in visited):
+                                visited.add((nr, nc))
+                                queue.append((nr, nc))
+                    
+                    # Calculate center of mass
+                    avg_r = sum(pos[0] for pos in cluster) / len(cluster)
+                    avg_c = sum(pos[1] for pos in cluster) / len(cluster)
+                    center = (int(avg_r), int(avg_c))
+                    clusters[center] = cluster
+        
+        return clusters
+
+    def _line_crosses_obstacle_side(self, start: Tuple[int, int], goal: Tuple[int, int],
+                                    obstacle_center: Tuple[int, int]) -> Optional[str]:
+        """Check if line from start to goal crosses obstacle, and on which side (left/right)."""
+        # Line direction vector
+        dx = goal[1] - start[1]
+        dy = goal[0] - start[0]
+        
+        # Vector from start to obstacle center
+        ocx = obstacle_center[1] - start[1]
+        ocy = obstacle_center[0] - start[0]
+        
+        # Cross product determines side
+        cross = dx * ocy - dy * ocx
+        
+        # Check if obstacle is actually in the path region
+        dot = dx * ocx + dy * ocy
+        path_length_sq = dx * dx + dy * dy
+        
+        if dot < 0 or dot > path_length_sq:
+            return None  # Obstacle not in line segment region
+        
+        # Distance from line
+        if path_length_sq == 0:
+            return None
+        
+        dist = abs(cross) / (path_length_sq ** 0.5)
+        
+        # If obstacle is close to the line, it matters
+        if dist < 5:  # Threshold in grid cells
+            return 'left' if cross > 0 else 'right'
+        
+        return None
+
+    def _partial_recompute(self, agent: Agent, old_path: List[Tuple[int, int]], radius: int) -> Optional[List[Tuple[int, int]]]:
+        """Recompute only the portion of path within radius R of new goal, clipping to new start."""
+        goal_r, goal_c = agent.goal
+        
+        # Find where old path enters the radius around new goal
+        split_index = None
+        for i, pos in enumerate(old_path):
+            dist = abs(pos[0] - goal_r) + abs(pos[1] - goal_c)  # Manhattan
+            if dist <= radius:
+                split_index = i
+                break
+        
+        if split_index is None:
+            print("Goal too far from old path:", agent.goal, "old path end:", old_path[-1])
+            return None  # Goal too far from old path, full recompute needed
+        
+        # Keep prefix of clipped path, recompute suffix
+        prefix = old_path[:split_index]
+        
+        # Temporarily update agent start to split point
+        original_start = agent.start
+        agent.start = prefix[-1] if prefix else agent.start
+        
+        suffix = self.low_level_search(agent, [])
+        agent.start = original_start  # Restore
+        
+        if suffix is None:
+            print("Low-level search failed")
+            return None
+        
+        final_path = prefix[:-1] + suffix  # -1 to avoid duplicate at split point
+
+        # Double-check final path
+        if final_path[-1] != agent.goal:
+            print(f"Final path assembly FAILED")
+            return None
+
+        return final_path
+
+    def _find_path_clip_point(self, new_start: Tuple[int, int], old_path: List[Tuple[int, int]]) -> Optional[int]:
+        # find match point on old path equal to new start
+        
+        for i, pos in enumerate(old_path):
+            if pos == new_start:
+                return i  # Exact match
+        
+        return None  # No match found
+
+    def _remove_opposing_directions(self, path: List[Tuple[int, int]], agent: Agent) -> List[Tuple[int, int]]:
+        """Detect opposing moves (up-down or left-right) and recompute from earliest."""
+        if len(path) < 3:
+            return path
+        
+        # Build direction sequence
+        directions = []
+        for i in range(len(path) - 1):
+            dr = path[i+1][0] - path[i][0]
+            dc = path[i+1][1] - path[i][1]
+            if dr != 0 or dc != 0:
+                directions.append((dr, dc, i))
+        
+        # Find earliest opposing pair
+        earliest_conflict = None
+        for i in range(len(directions) - 1):
+            for j in range(i + 1, len(directions)):
+                dr1, dc1, idx1 = directions[i]
+                dr2, dc2, idx2 = directions[j]
+                
+                # Check if opposing
+                if (dr1 == -dr2 and dr1 != 0) or (dc1 == -dc2 and dc1 != 0):
+                    if earliest_conflict is None or idx1 < earliest_conflict:
+                        earliest_conflict = idx1
+                    break
+        
+        if earliest_conflict is not None:
+            print(f"Found opposing directions at index {earliest_conflict}")
+            
+            # Create temporary agent starting at conflict point
+            temp_agent = Agent(
+                id=agent.id,
+                start=path[earliest_conflict],
+                goal=agent.goal
+            )
+            
+            # Recompute from conflict point
+            suffix = self.low_level_search(temp_agent, [])
+            
+            if suffix is None:
+                print("Failed to recompute from opposing direction conflict")
+                return None  # Return original
+            
+            # Combine: keep path up to conflict, add recomputed suffix
+            return path[:earliest_conflict] + suffix
+        
+        return path
 
 def plot_solution(solution: Dict[int, List[Tuple[int, int]]], grid: List[List[int]], 
                  obstacles: List[Obstacle] = None, workspace_width: float = None, 
@@ -485,6 +724,7 @@ class InteractivePlanner:
         # Check if new position is valid
         if self.is_valid_goal(new_goal):
             agent1.goal = new_goal
+            print(f"Moved Agent 1's goal to {new_goal}")
             self.draw_goal_marker()
             self.calculate_new_solution()
         else:
@@ -505,10 +745,11 @@ class InteractivePlanner:
         # Update the CBS with new agent configuration
         prev_solution = self.current_solution
         self.cbs = ConflictBasedSearch(self.grid, self.agents)
-        solution = self.cbs.solve()
+        solution = self.cbs.solve(previous_solution=prev_solution)
         
         calc_time = time.time() - start_time
         print(f"New path calculated in {calc_time:.20f}s")
+        print(f"agent 1 end of path: {solution[1][-1] if solution else 'N/A'}")
         
         # Stop any existing animation
         if self.animation_timer:
@@ -701,10 +942,10 @@ def main():
     print("-" * 50)
     
     # Create sample problem with convex obstacles
-    # grid, agents, obstacles, workspace_width, workspace_height, cell_size = create_sample_problem_with_obstacles()
+    grid, agents, obstacles, workspace_width, workspace_height, cell_size = create_sample_problem_with_obstacles()
     
-    # planner = InteractivePlanner(grid, agents, obstacles, workspace_width, workspace_height, cell_size)
-    # planner.show()
+    planner = InteractivePlanner(grid, agents, obstacles, workspace_width, workspace_height, cell_size)
+    planner.show()
 
 if __name__ == "__main__":
     main()
