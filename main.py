@@ -105,10 +105,27 @@ def create_sample_problem_with_obstacles():
     
     # Create agents (positions in grid coordinates)
     agents = [
-        #Agent(id=0, start=world_to_grid((1.0, 1.0)), goal=world_to_grid((18.0, 13.0))),  # Agent 0
+        Agent(id=0, start=world_to_grid((1.0, 1.0)), goal=world_to_grid((18.0, 13.0))),  # Agent 0
         Agent(id=1, start=world_to_grid((18.0, 1.0)), goal=world_to_grid((1.0, 13.0))),   # Agent 1
-        Agent(id=2, start=world_to_grid((15.0, 1.0)), goal=world_to_grid((1.0, 1.0)))   # Agent 2
+        Agent(id=2, start=world_to_grid((15.0, 1.0)), goal=world_to_grid((1.0, 1.0))),   # Agent 2
+        Agent(id=3, start=world_to_grid((18.0, 10.0)), goal=world_to_grid((15.0, 1.0))),   # Agent 3
     ]
+
+    # check conflicts
+    for a in agents:
+        for b in agents:
+            if a.id >= b.id:
+                continue
+            if a.start == b.start or a.goal == b.goal:
+                print(f"Conflict in initial positions or goals between Agent {a.id} and Agent {b.id}")
+    # check grid validity
+    for agent in agents:
+        sy, sx = agent.start
+        gy, gx = agent.goal
+        if grid[sy][sx] == 1:
+            print(f"Agent {agent.id} start position is inside an obstacle!")
+        if grid[gy][gx] == 1:
+            print(f"Agent {agent.id} goal position is inside an obstacle!")
     
     return grid, agents, obstacles, workspace_width, workspace_height, cell_size
 
@@ -240,35 +257,44 @@ class ConflictBasedSearch:
         return conflicts
     
     def solve(self, previous_solution: Optional[Dict[int, List[Tuple[int, int]]]] = None) -> Optional[Dict[int, List[Tuple[int, int]]]]:
-        """
-        MAIN CBS ALGORITHM with optional path reuse optimization.
-        
-        Parameters:
-            previous_solution: Optional previous solution dict to reuse paths when possible
-        """
+        import time
+        start_time = time.time()
+        timeout = 5.0  # seconds
+
+        plan_low_level = True
         # If we have a previous solution, try to reuse paths intelligently
         if previous_solution is not None:
             optimized_solution = self._try_optimize_paths(previous_solution)
             if optimized_solution is not None:
                 print("Successfully optimized paths from previous solution")
-                return optimized_solution
-            
-        print("Falling back to full CBS recompute")
+                plan_low_level = False
+
+                if not self.detect_conflicts(optimized_solution):
+                    return optimized_solution
         
-        # Standard CBS from scratch
-        root = CBSNode(constraints=[], solution={}, cost=0)
-        
-        for agent in self.agents:
-            path = self.low_level_search(agent, [])
-            if path is None:
-                return None
-            root.solution[agent.id] = path
+        if plan_low_level:
+            print("Falling back to full CBS recompute")
+            # init CBS
+            root = CBSNode(constraints=[], solution={}, cost=0)
+            for agent in self.agents:
+                path = self.low_level_search(agent, [])
+                if path is None:
+                    return None
+                root.solution[agent.id] = path
+        else:
+            root = CBSNode(constraints=[], solution=optimized_solution, cost=0)
+            root.cost = sum(len(path) for path in root.solution.values())
         
         root.cost = sum(len(path) for path in root.solution.values())
         open_list = [root]
         heapq.heapify(open_list)
         
         while open_list:
+            # Check timeout
+            if time.time() - start_time > timeout:
+                print(f"CBS timeout after {timeout}s")
+                return None
+
             current = heapq.heappop(open_list)
             conflicts = self.detect_conflicts(current.solution)
             
@@ -276,7 +302,7 @@ class ConflictBasedSearch:
                 return current.solution
             
             conflict = conflicts[0]
-            agent1_id, agent2_id, time, position = conflict
+            agent1_id, agent2_id, conflict_time, position = conflict
             
             for constrained_agent in [agent1_id, agent2_id]:
                 child = CBSNode(
@@ -284,8 +310,8 @@ class ConflictBasedSearch:
                     solution=deepcopy(current.solution),
                     cost=0
                 )
-                
-                constraint = Constraint(constrained_agent, time, position)
+
+                constraint = Constraint(constrained_agent, conflict_time, position)
                 child.constraints.append(constraint)
                 
                 constrained_agent_obj = next(a for a in self.agents if a.id == constrained_agent)
@@ -338,12 +364,7 @@ class ConflictBasedSearch:
                 return None  # Fall back
             optimized[agent.id] = cleaned_path
         
-        # Final check, no conflicts in optimized solution
-        conflicts = self.detect_conflicts(optimized)
-        if conflicts:
-            print("Conflicts detected in optimized solution")
-            return None  # Fall back to full CBS
-        
+        # return optimized solution for initialization of CBS
         return optimized
 
     def _obstacle_crossing_changed(self, old_start: Tuple[int, int], old_goal: Tuple[int, int],
@@ -535,109 +556,6 @@ class ConflictBasedSearch:
         
         return path
 
-def plot_solution(solution: Dict[int, List[Tuple[int, int]]], grid: List[List[int]], 
-                 obstacles: List[Obstacle] = None, workspace_width: float = None, 
-                 workspace_height: float = None, cell_size: float = 1.0):
-
-    # Create a matplotlib visualization of the solution with time-colored paths.
-    if solution is None:
-        print("No solution to plot!")
-        return
-    
-    # Create figure and axis
-    fig, ax = plt.subplots(figsize=(12, 10))
-    
-    # Plot original obstacle polygons if provided
-    if obstacles:
-        for i, obstacle in enumerate(obstacles):
-            vertices = np.array(obstacle.vertices + [obstacle.vertices[0]])  # Close the polygon
-            ax.plot(vertices[:, 0], vertices[:, 1], 'k-', linewidth=2, alpha=0.7)
-            ax.fill(vertices[:, 0], vertices[:, 1], color='gray', alpha=0.3)
-    
-    # Plot grid obstacles (for reference)
-    for i, row in enumerate(grid):
-        for j, cell in enumerate(row):
-            if cell == 1:  # Obstacle
-                # Convert grid coordinates to world coordinates
-                world_x = j * cell_size
-                world_y = i * cell_size
-                ax.add_patch(plt.Rectangle((world_x, world_y), cell_size, cell_size, 
-                                         facecolor='red', alpha=0.4, edgecolor='red'))
-    
-    # Define colors for agents
-    agent_colors = ['blue', 'red', 'green', 'purple', 'orange']
-    agent_offsets = [(-0.02, -0.02), (0.02, 0.02), (-0.02, 0.02), (0.02, -0.02), (0, 0)] # so they don't overlap in visual
-    
-    # Plot paths for each agent
-    max_time = max(len(path) for path in solution.values())
-    
-    for agent_id, path in solution.items():
-        agent_color = agent_colors[agent_id % len(agent_colors)]
-        
-        # Extract x and y coordinates (convert grid coordinates to world coordinates)
-        x_coords = [(pos[1] + 0.5) * cell_size + agent_offsets[agent_id][0] for pos in path]  # Column to world x
-        y_coords = [(pos[0] + 0.5) * cell_size + agent_offsets[agent_id][1] for pos in path]  # Row to world y
-
-        # Create color map for time progression
-        times = np.arange(len(path))
-        colors = plt.cm.plasma(times / max(times)) if len(times) > 1 else [agent_color]
-        
-        # Plot each timestep as individual dots with changing colors
-        for i, (x, y) in enumerate(zip(x_coords, y_coords)):
-            # Use different markers for start, intermediate, and goal positions
-            if i == 0:  # Start position
-                marker = 's'  # Square
-                size = 200
-                edgecolor = 'black'
-                linewidth = 3
-                label = f'Agent {agent_id} Start' if agent_id == 0 or agent_id == 1 else None
-            elif i == len(path) - 1:  # Goal position
-                marker = 's'  # another square
-                size = 200
-                edgecolor = 'black'
-                linewidth = 3
-                label = f'Agent {agent_id} Goal' if agent_id == 0 or agent_id == 1 else None
-            else:  # Intermediate positions
-                marker = 'o'  # Circle
-                size = 50
-                edgecolor = 'white'
-                linewidth = 1
-                label = None
-            
-            # Plot the dot with time-based color
-            scatter = ax.scatter(x, y, c=[colors[i]], s=size, marker=marker,
-                               edgecolors=edgecolor, linewidth=linewidth,
-                               label=label, zorder=5, alpha=0.8)
-            
-            # Add timestep number on each dot
-            ax.annotate(str(i), (x, y), 
-                       ha='center', va='center',
-                       fontsize=8, fontweight='bold',
-                       color='white' if marker == 'o' else 'black')
-    
-    # Set up the plot
-    if workspace_width and workspace_height:
-        ax.set_xlim(0, workspace_width)
-        ax.set_ylim(0, workspace_height)
-        ax.set_xlabel('X (world coordinates)')
-        ax.set_ylabel('Y (world coordinates)')
-        ax.set_title(f'Multi-Agent Pathfinding Solution\n(Workspace: {workspace_width}x{workspace_height}, Resolution: {cell_size:.2f})')
-    else:
-        ax.set_xlim(-0.5, len(grid[0]) - 0.5)
-        ax.set_ylim(-0.5, len(grid) - 0.5)
-        ax.set_xlabel('Column')
-        ax.set_ylabel('Row')
-        ax.set_title('Multi-Agent Pathfinding Solution')
-    
-    ax.set_aspect('equal')
-    ax.grid(True, alpha=0.3)
-    
-    # Invert y-axis to match grid convention (0,0 at top-left)
-    ax.invert_yaxis()
-    
-    plt.tight_layout()
-    plt.show()
-
 class InteractivePlanner:
     """Interactive planner that allows changing agent 1's goal with arrow keys."""
     
@@ -667,10 +585,16 @@ class InteractivePlanner:
 
         # Draw static background once
         self.setup_static_background()
+
+        # togglable params
+        self.extra_agent_goal_updates = True  # whether agent starts update as they move
+        if self.extra_agent_goal_updates:
+            self.agents[0].goal = (self.agents[1].goal[0] + 1, self.agents[1].goal[1] + 1)  # offset to avoid overlap
+            self.agents[3].goal = (self.agents[1].goal[0] - 1, self.agents[1].goal[1] - 1)  # offset to avoid overlap
         
         # Calculate and plot initial solution
         self.calculate_new_solution()
-        
+
     def world_to_grid(self, world_pos: Tuple[float, float]) -> Tuple[int, int]:
         """Convert world coordinates to grid coordinates."""
         x, y = world_pos
@@ -691,11 +615,22 @@ class InteractivePlanner:
     def is_valid_goal(self, grid_pos: Tuple[int, int]) -> bool:
         """Check if a grid position is valid for placing a goal."""
         row, col = grid_pos
-        if (0 <= row < len(self.grid) and 
-            0 <= col < len(self.grid[0]) and 
-            self.grid[row][col] == 0):
-            return True
-        return False
+    
+        # Check center cell and all 8 surrounding cells (3x3 footprint)
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                check_row, check_col = row + dr, col + dc
+                
+                # Check bounds
+                if not (0 <= check_row < len(self.grid) and 
+                        0 <= check_col < len(self.grid[0])):
+                    return False
+                
+                # Check obstacle
+                if self.grid[check_row][check_col] == 1:
+                    return False
+        
+        return True
     
     def on_key_press(self, event):
         """Handle keyboard input to move agent 1's goal."""
@@ -720,11 +655,30 @@ class InteractivePlanner:
             new_goal = (row, col - speed)
         elif event.key == 'right':
             new_goal = (row, col + speed)
+
+        if not self.is_valid_goal(new_goal):
+            print(f"Trying to move to valid goal position: {new_goal}")
+            for step in range(speed-1, 0, -1):
+                if event.key == 'up':
+                    new_goal = (row - step, col)
+                elif event.key == 'down':
+                    new_goal = (row + step, col)
+                elif event.key == 'left':
+                    new_goal = (row, col - step)
+                elif event.key == 'right':
+                    new_goal = (row, col + step)
+                if self.is_valid_goal(new_goal):
+                    break
         
         # Check if new position is valid
         if self.is_valid_goal(new_goal):
             agent1.goal = new_goal
-            print(f"Moved Agent 1's goal to {new_goal}")
+            if self.extra_agent_goal_updates and len(self.agents) > 0:
+                agent0 = next(a for a in self.agents if a.id == 0)
+                agent3 = next(a for a in self.agents if a.id == 3)
+                agent0.goal = (new_goal[0] + 1, new_goal[1] + 1)  # sync agent 0's goal if toggled, but offset to avoid overlap
+                agent3.goal = (new_goal[0] - 1, new_goal[1] - 1)  # sync agent 3's goal if toggled, but offset to avoid overlap
+
             self.draw_goal_marker()
             self.calculate_new_solution()
         else:
@@ -749,7 +703,6 @@ class InteractivePlanner:
         
         calc_time = time.time() - start_time
         print(f"New path calculated in {calc_time:.20f}s")
-        print(f"agent 1 end of path: {solution[1][-1] if solution else 'N/A'}")
         
         # Stop any existing animation
         if self.animation_timer:
@@ -810,7 +763,8 @@ class InteractivePlanner:
         
         # Check win/lose conditions
         if all_at_goal:
-            self.end_game("GAME OVER - Agent reached the goal! You lost!")
+            self.end_game("GAME OVER")
+            print("All agents reached their goals.")
 
     def draw_goal_marker(self):
         """Draw the goal position that the user is controlling."""
@@ -827,7 +781,7 @@ class InteractivePlanner:
             self.goal_marker.remove()
         
         # Draw goal as a large square with distinctive appearance
-        self.goal_marker = self.ax.scatter(world_x, world_y, c='gold', s=600, 
+        self.goal_marker = self.ax.scatter(world_x, world_y, c='gold', s=800, 
                                         marker='s', edgecolors='black', linewidth=3,
                                         zorder=15, alpha=0.9, label='Goal (Move with arrows)')
 
@@ -910,12 +864,12 @@ class InteractivePlanner:
             world_y = (grid_pos[0] + 0.5) * self.cell_size
             
             # Create square marker for current position
-            if agent_id == 1:
+            if agent_id == 1 or (self.extra_agent_goal_updates and (agent_id == 0 or agent_id ==3 or agent_id ==4 or agent_id ==5 or agent_id ==6 or agent_id ==7 or agent_id ==8 or agent_id ==9)):
                 # Special large circle for agent 1 (the one we control)
-                marker, size, edgecolor = 'o', 400, 'black'
+                marker, size, edgecolor = 'o', 100, 'black'
             else:
                 # Square for other agents
-                marker, size, edgecolor = 's', 300, 'black'
+                marker, size, edgecolor = 's', 100, 'black'
             
             pos_obj = self.ax.scatter(world_x, world_y, c=agent_color, s=size, 
                                     marker=marker, edgecolors=edgecolor, linewidth=3,
@@ -928,7 +882,7 @@ class InteractivePlanner:
 
     def show_no_solution(self):
         """Display no solution message."""
-        self.no_solution_text = self.ax.text(0.5, 0.5, 'No Solution Found!', 
+        self.no_solution_text = self.ax.text(0.5, 0.5, 'CBS Timeout', 
                                             transform=self.ax.transAxes, ha='center', va='center',
                                             fontsize=16, color='red', fontweight='bold')
 

@@ -4,7 +4,11 @@ import random, time
 from main import ConflictBasedSearch
 from main import create_sample_problem_with_obstacles
 
-def benchmark_cbs(grid, agents, num_moves=100, goal_step=2):
+def manhattan_distance(pos1, pos2):
+    return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
+
+def benchmark_cbs(grid, agents, num_moves=1000, goal_step=2, optimize_paths=True):
     working_agents = _deepcopy(agents)
     
     # Build initial solution
@@ -29,8 +33,8 @@ def benchmark_cbs(grid, agents, num_moves=100, goal_step=2):
             for aid, path in solution.items():
                 current_positions[aid] = path[timestep] if timestep < len(path) else path[-1]
         
-        # Restart if any agent at its goal
-        if any(current_positions[a.id] == a.goal for a in working_agents):
+        # Restart if any agent close to its goal
+        if any(manhattan_distance(current_positions[a.id], a.goal) < 20 for a in working_agents):
             working_agents = _deepcopy(initial_snapshot)
             cbs = ConflictBasedSearch(grid, working_agents)
             solution = cbs.solve()  # Fresh start, no previous solution
@@ -62,7 +66,10 @@ def benchmark_cbs(grid, agents, num_moves=100, goal_step=2):
         
         start = time.perf_counter()
         cbs = ConflictBasedSearch(grid, working_agents)
-        solution_new = cbs.solve(previous_solution=previous_solution)  # Pass old solution
+        if optimize_paths:
+            solution_new = cbs.solve(previous_solution=previous_solution)  # Pass old solution
+        else:
+            solution_new = cbs.solve()  # Fresh start
         elapsed = time.perf_counter() - start
         print(f"Recomputed CBS solution in {elapsed:.6f}s for new goal {a1.goal}")
         
@@ -89,7 +96,7 @@ def benchmark_cbs(grid, agents, num_moves=100, goal_step=2):
         'all_times': times
     }
 
-def benchmark_cbs_sample(num_moves=100, goal_step=2):
+def benchmark_cbs_sample(num_moves=1000, goal_step=2):
     """Convenience wrapper: builds sample problem then calls benchmark_cbs."""
     grid, agents, obstacles, w, h, cell_size = create_sample_problem_with_obstacles()
     return benchmark_cbs(grid, agents, num_moves=num_moves, goal_step=goal_step)
@@ -109,7 +116,7 @@ def plot_computation_times(stats, title="CBS Recomputation Times"):
         return
     
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.boxplot([times], labels=['Recomputation Time'])
+    ax.boxplot([times], tick_labels=['Recomputation Time'])
     ax.set_ylabel('Time (seconds)')
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
