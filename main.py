@@ -575,13 +575,14 @@ class InteractivePlanner:
         self.game_over = False
         self.animation_timer = None
         
-        # Set up the figure
-        self.fig, self.ax = plt.subplots(figsize=(12, 10))
+        # Set up the figure (smaller size for faster rendering)
+        self.fig, self.ax = plt.subplots(figsize=(8, 6))
         self.fig.canvas.mpl_connect('key_press_event', self.on_key_press)
         
         # Initialize containers for dynamic elements
         self.agent_current_positions = {}  # Current positions of agents
         self.agent_position_objects = {}   # Visual objects for current positions
+        self.detection_circles = []  # Visual objects for detection radius circles
         self.no_solution_text = None
 
         # toggle radius where guards can 'see' the prisoner
@@ -695,8 +696,11 @@ class InteractivePlanner:
 
         if agents_seeing_prisoner == [2]:
             self.guard_two_to_door = False # only guard 2 sees prisoner, so have them follow
-        else:
-            self.guard_two_to_door = True  # other guards see prisoner, have guard 2 go to door   
+        elif len(agents_seeing_prisoner) > 0:
+            self.guard_two_to_door = True  # other guards see prisoner, have guard 2 go to door 
+            if self.agents[2].goal != self.door_loc:
+                self.agents[2].goal = self.door_loc  # set guard 2's goal to door location  
+                self.calculate_new_solution()
         return agents_seeing_prisoner
     
     def update_patrol_goals(self, agent_id: Optional[int] = None):
@@ -860,7 +864,7 @@ class InteractivePlanner:
         
         # Create timer that calls update_agent_positions every X ms
         self.animation_timer = FuncAnimation(self.fig, self.update_agent_positions, 
-                                        interval=800, repeat=True, blit=False)
+                                        interval=200, repeat=True, blit=False)
 
     def update_agent_positions(self, frame):
         """Move agents one step forward in their paths."""
@@ -901,7 +905,7 @@ class InteractivePlanner:
         self.prisoner_found = self._check_prisoner_detection()
         if not self.last_prisoner_found == self.prisoner_found:
             # initialize chase mode
-            if self.prisoner_found:
+            if self.prisoner_found and not self.last_prisoner_found:
                 print("----------------Prisoner detected! Guards are chasing!")
                 agent1 = next(a for a in self.agents if a.id == 1)
                 agent0 = next(a for a in self.agents if a.id == 0)
@@ -915,7 +919,7 @@ class InteractivePlanner:
                     agent2.goal = (self.prisoner_loc[0] + 2, self.prisoner_loc[1] - 2)  # offset to avoid overlap
                 agent3.goal = (self.prisoner_loc[0] - 1, self.prisoner_loc[1] - 1)  # offset to avoid overlap
                 self.calculate_new_solution(inc_step=False)
-            if not self.prisoner_found:
+            if not self.prisoner_found and self.last_prisoner_found:
                 print("----Prisoner lost! Guards resuming patrol.")
                 self.update_patrol_goals()
                 self.calculate_new_solution(inc_step=False)
@@ -935,7 +939,7 @@ class InteractivePlanner:
             self.goal_marker.remove()
         
         # Draw goal as a large square with distinctive appearance
-        self.goal_marker = self.ax.scatter(world_x, world_y, c='gold', s=800, 
+        self.goal_marker = self.ax.scatter(world_x, world_y, c='gold', s=400, 
                                         marker='s', edgecolors='black', linewidth=3,
                                         zorder=15, alpha=0.9, label='Goal (Move with arrows)')
 
@@ -996,6 +1000,11 @@ class InteractivePlanner:
                 pos_obj.remove()
         self.agent_position_objects.clear()
         
+        # Remove detection circles
+        for circle in self.detection_circles:
+            circle.remove()
+        self.detection_circles.clear()
+        
         # Remove no solution text if it exists
         if self.no_solution_text:
             self.no_solution_text.remove()
@@ -1033,8 +1042,33 @@ class InteractivePlanner:
             
             self.agent_position_objects[agent_id] = pos_obj
         
+        # Draw detection circles for guards in patrol mode
+        self.draw_detection_circles()
+        
         # Update display
         self.fig.canvas.draw_idle()
+    
+    def draw_detection_circles(self):
+        """Draw detection radius circles around guards in patrol mode."""
+        # Remove old circles
+        for circle in self.detection_circles:
+            circle.remove()
+        self.detection_circles.clear()
+        
+        # Only draw circles when NOT in chase mode (patrol mode)
+        if not self.prisoner_found:
+            for guard_id in [0, 1, 2, 3]:  # Guard IDs
+                if guard_id in self.agent_current_positions:
+                    guard_pos = self.agent_current_positions[guard_id]
+                    world_x = (guard_pos[1] + 0.5) * self.cell_size
+                    world_y = (guard_pos[0] + 0.5) * self.cell_size
+                    radius_world = self.detection_radius * self.cell_size
+                    
+                    circle = plt.Circle((world_x, world_y), radius_world, 
+                                      color='blue', fill=False, linestyle='--', 
+                                      linewidth=1.5, alpha=0.3, zorder=5)
+                    self.ax.add_patch(circle)
+                    self.detection_circles.append(circle)
 
     def show_no_solution(self):
         """Display no solution message."""
