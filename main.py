@@ -1,4 +1,5 @@
 import heapq
+import time
 import matplotlib.pyplot as plt
 import numpy as np
 from typing import List, Tuple, Dict, Set, Optional
@@ -583,17 +584,133 @@ class InteractivePlanner:
         self.agent_position_objects = {}   # Visual objects for current positions
         self.no_solution_text = None
 
+        # toggle radius where guards can 'see' the prisoner
+        self.detection_radius = 25
+        self.prisoner_found = False
+        self.last_prisoner_found = False
+        self.guard_quadrants = self._assign_quadrants()
+        # Assign coverage goals to guards
+        self.coverage_goals = {}
+        for agent in self.agents:
+            self.coverage_goals[agent.id] = self.generate_coverage_goals(self.guard_quadrants[agent.id])
+        self.coverage_goal_indeces = {agent.id: 0 for agent in self.agents}
+        self.door_loc = self.agents[2].goal  # prisoner exit door location
+        self.prisoner_loc = self.agents[1].goal  # prisoner start location
+        self.guard_two_to_door = False  # flag to indicate if guard 2 is heading to door
+
         # Draw static background once
         self.setup_static_background()
 
-        # togglable params
-        self.extra_agent_goal_updates = True  # whether agent starts update as they move
-        if self.extra_agent_goal_updates:
-            self.agents[0].goal = (self.agents[1].goal[0] + 1, self.agents[1].goal[1] + 1)  # offset to avoid overlap
-            self.agents[3].goal = (self.agents[1].goal[0] - 1, self.agents[1].goal[1] - 1)  # offset to avoid overlap
+        # self.agents[0].goal = (self.agents[1].goal[0] + 1, self.agents[1].goal[1] + 1)  # offset to avoid overlap
+        # self.agents[3].goal = (self.agents[1].goal[0] - 1, self.agents[1].goal[1] - 1)  # offset to avoid overlap
+
+        # start in patrol mode, not chasing prisoner
+        self.update_patrol_goals()
         
         # Calculate and plot initial solution
         self.calculate_new_solution()
+
+    def _assign_quadrants(self):
+        """Assign each guard to a quadrant of the workspace."""
+        rows = len(self.grid)
+        cols = len(self.grid[0])
+        
+        # Define quadrants: (row_start, row_end, col_start, col_end)
+        quadrants = {
+            0: (0, rows//2, 0, cols//2),           # Top-left
+            2: (rows//2, rows, 0, cols//2),        # Bottom-left  
+            3: (0, rows//2, cols//2, cols),        # Top-right
+            1: (rows//2, rows, cols//2, cols)      # Bottom-right
+        }
+        return quadrants
+    
+    def generate_coverage_goals(self, quadrant: Tuple[int, int, int, int], padding: int = 5) -> List[Tuple[int, int]]:
+        """Generate a simple coverage path for a guard in its quadrant."""
+        row_start, row_end, col_start, col_end = quadrant
+        goals = []
+        
+        last_point = None
+        for r in range(row_start, row_end, padding):
+            keep_next_point = True
+            if (r - row_start) % (2 * padding) == 0:
+                # Left to right
+                for c in range(col_start, col_end, padding):
+                    if self.grid[r][c] == 0:
+                        last_point = (r, c)
+                        if keep_next_point:
+                            goals.append((r, c))
+                            keep_next_point = False
+                    else:
+                        if last_point is not None:
+                            goals.append(last_point)
+                        keep_next_point = True
+            else:
+                # Right to left
+                for c in range(col_end - 1, col_start - 1, -padding):
+                    if self.grid[r][c] == 0:
+                        last_point = (r, c)
+                        if keep_next_point:
+                            goals.append((r, c))
+                            keep_next_point = False
+                    else:
+                        if last_point is not None:
+                            goals.append(last_point)
+                        keep_next_point = True
+            goals.append(last_point)  # Ensure we end the row at last valid point
+        return goals
+    
+    def plot_coverage_goals(self):
+        """Plot coverage goals for each guard."""
+        # Define colors for each agent's patrol path
+        patrol_colors = {
+            0: 'cyan',
+            1: 'orange', 
+            2: 'lime',
+            3: 'magenta'
+        }
+        
+        for agent in self.agents:
+            goals = self.coverage_goals[agent.id]
+            if not goals:
+                continue
+                
+            goal_world_coords = [self.grid_to_world(g) for g in goals]
+            xs, ys = zip(*goal_world_coords)
+            
+            color = patrol_colors.get(agent.id, 'gray')
+            self.ax.plot(xs, ys, linestyle='--', marker='o', markersize=3,
+                        color=color, alpha=0.5, linewidth=1.5,
+                        label=f'Agent {agent.id} Patrol Path')
+        
+        self.ax.legend(loc='upper right', fontsize=8)
+    
+    def _check_prisoner_detection(self):
+        """Check if any guard can detect the prisoner."""
+        
+        agents_seeing_prisoner = []
+        for agent in self.agents:
+            distance = abs(self.prisoner_loc[0] - self.agent_current_positions[agent.id][0]) + abs(self.agent_current_positions[agent.id][1] - self.prisoner_loc[1])
+            if distance <= self.detection_radius:
+                agents_seeing_prisoner.append(agent.id)
+
+        if agents_seeing_prisoner == [2]:
+            self.guard_two_to_door = False # only guard 2 sees prisoner, so have them follow
+        else:
+            self.guard_two_to_door = True  # other guards see prisoner, have guard 2 go to door   
+        return agents_seeing_prisoner
+    
+    def update_patrol_goals(self, agent_id: Optional[int] = None):
+        if agent_id is not None:
+            agent = next(a for a in self.agents if a.id == agent_id)
+            coverage_goals = self.coverage_goals[agent.id]
+            agent.goal = coverage_goals[self.coverage_goal_indeces[agent.id] % len(coverage_goals)]
+            self.coverage_goal_indeces[agent.id] += 1
+            return
+
+        for agent in self.agents:
+            coverage_goals = self.coverage_goals[agent.id]
+            agent.goal = coverage_goals[self.coverage_goal_indeces[agent.id] % len(coverage_goals)]
+            self.coverage_goal_indeces[agent.id] += 1
 
     def world_to_grid(self, world_pos: Tuple[float, float]) -> Tuple[int, int]:
         """Convert world coordinates to grid coordinates."""
@@ -642,7 +759,7 @@ class InteractivePlanner:
             
         # Get current goal of agent 1
         agent1 = next(a for a in self.agents if a.id == 1)
-        current_goal = agent1.goal
+        current_goal = self.prisoner_loc
         
         # Calculate new goal position
         row, col = current_goal
@@ -672,19 +789,25 @@ class InteractivePlanner:
         
         # Check if new position is valid
         if self.is_valid_goal(new_goal):
-            agent1.goal = new_goal
-            if self.extra_agent_goal_updates and len(self.agents) > 0:
+            self.prisoner_loc = new_goal  # update prisoner location
+            if self.prisoner_found:
+                agent1.goal = new_goal
                 agent0 = next(a for a in self.agents if a.id == 0)
+                agent2 = next(a for a in self.agents if a.id == 2)
                 agent3 = next(a for a in self.agents if a.id == 3)
                 agent0.goal = (new_goal[0] + 1, new_goal[1] + 1)  # sync agent 0's goal if toggled, but offset to avoid overlap
+                if self.guard_two_to_door:
+                    agent2.goal = self.door_loc  # prisoner exit door location
+                else:
+                    agent2.goal = (new_goal[0] + 2, new_goal[1] - 2)  # get to follow prisoner until another guard reaches them
                 agent3.goal = (new_goal[0] - 1, new_goal[1] - 1)  # sync agent 3's goal if toggled, but offset to avoid overlap
 
-            self.draw_goal_marker()
-            self.calculate_new_solution()
+                self.draw_goal_marker()
+                self.calculate_new_solution()
         else:
             print(f"Invalid goal position: {new_goal}")
     
-    def calculate_new_solution(self):
+    def calculate_new_solution(self, inc_step = True):
         """Calculate a new solution when goal changes."""
         import time
         start_time = time.time()
@@ -708,15 +831,12 @@ class InteractivePlanner:
         if self.animation_timer:
             self.animation_timer.event_source.stop()
         
-        # Clear dynamic elements
-        self.clear_dynamic_elements()
-        
         if solution is None:
             self.show_no_solution()
             self.game_over = True
         else:
             self.current_solution = solution
-            self.current_timestep = 0
+            self.current_timestep = 0 if inc_step else -1
             self.game_over = False
             
             # Initialize agent positions to start positions (which are now current positions)
@@ -724,6 +844,8 @@ class InteractivePlanner:
                 self.agent_current_positions[agent_id] = path[0]
             
             # Start the animation
+            # Clear dynamic elements
+            self.clear_dynamic_elements()
             self.start_animation()
         
         # Update display
@@ -738,7 +860,7 @@ class InteractivePlanner:
         
         # Create timer that calls update_agent_positions every X ms
         self.animation_timer = FuncAnimation(self.fig, self.update_agent_positions, 
-                                        interval=100, repeat=True, blit=False)
+                                        interval=800, repeat=True, blit=False)
 
     def update_agent_positions(self, frame):
         """Move agents one step forward in their paths."""
@@ -749,12 +871,14 @@ class InteractivePlanner:
         
         # Update each agent's position
         all_at_goal = True
+        agents_at_goal = []
         for agent_id, path in self.current_solution.items():
             if self.current_timestep < len(path):
                 self.agent_current_positions[agent_id] = path[self.current_timestep]
                 all_at_goal = False
             else:
                 # Agent has reached the end of path, stay at goal
+                agents_at_goal.append(agent_id)
                 self.agent_current_positions[agent_id] = path[-1]
         
         # Update the visual representation
@@ -762,15 +886,45 @@ class InteractivePlanner:
         self.draw_goal_marker()
         
         # Check win/lose conditions
-        if all_at_goal:
-            self.end_game("GAME OVER")
-            print("All agents reached their goals.")
+        if all_at_goal and self.prisoner_found:
+            if self.agent_current_positions[2] == self.door_loc and self.agent_current_positions[1] == self.prisoner_loc and self.agent_current_positions[0] == (self.prisoner_loc[0] + 1, self.prisoner_loc[1] + 1) and self.agent_current_positions[3] == (self.prisoner_loc[0] -1, self.prisoner_loc[1] -1):
+                self.end_game("GAME OVER")
+                print("All agents reached their goals.")
+
+        if agents_at_goal and not self.prisoner_found:
+            # If any guard reached their patrol goal, update patrol goals and recalculate paths
+            for agent_id in agents_at_goal:
+                print(f"Guard {agent_id} reached patrol goal, updating patrol paths.")
+                self.update_patrol_goals(agent_id)  # continue moving guards in patrol
+            self.calculate_new_solution(inc_step=False)  # recalculate paths for patrol
+
+        self.prisoner_found = self._check_prisoner_detection()
+        if not self.last_prisoner_found == self.prisoner_found:
+            # initialize chase mode
+            if self.prisoner_found:
+                print("----------------Prisoner detected! Guards are chasing!")
+                agent1 = next(a for a in self.agents if a.id == 1)
+                agent0 = next(a for a in self.agents if a.id == 0)
+                agent2 = next(a for a in self.agents if a.id == 2)
+                agent3 = next(a for a in self.agents if a.id == 3)
+                agent1.goal = self.prisoner_loc
+                agent0.goal = (self.prisoner_loc[0] + 1, self.prisoner_loc[1] + 1)  # offset to avoid overlap
+                if self.guard_two_to_door:
+                    agent2.goal = self.door_loc  # prisoner exit door location
+                else:
+                    agent2.goal = (self.prisoner_loc[0] + 2, self.prisoner_loc[1] - 2)  # offset to avoid overlap
+                agent3.goal = (self.prisoner_loc[0] - 1, self.prisoner_loc[1] - 1)  # offset to avoid overlap
+                self.calculate_new_solution(inc_step=False)
+            if not self.prisoner_found:
+                print("----Prisoner lost! Guards resuming patrol.")
+                self.update_patrol_goals()
+                self.calculate_new_solution(inc_step=False)
+
+        self.last_prisoner_found = self.prisoner_found
 
     def draw_goal_marker(self):
         """Draw the goal position that the user is controlling."""
-        # Get Agent 1's goal position
-        agent1 = next(a for a in self.agents if a.id == 1)
-        goal_pos = agent1.goal
+        goal_pos = self.prisoner_loc
         
         # Convert to world coordinates
         world_x = (goal_pos[1] + 0.5) * self.cell_size
@@ -818,6 +972,8 @@ class InteractivePlanner:
                     self.ax.add_patch(plt.Rectangle((world_x, world_y), self.cell_size, self.cell_size, 
                                                 facecolor='red', alpha=0.4, edgecolor='red'))
         
+        # self.plot_coverage_goals()
+
         # Set up plot appearance (this stays constant)
         self.ax.set_xlim(0, self.workspace_width)
         self.ax.set_ylim(0, self.workspace_height)
@@ -864,7 +1020,7 @@ class InteractivePlanner:
             world_y = (grid_pos[0] + 0.5) * self.cell_size
             
             # Create square marker for current position
-            if agent_id == 1 or (self.extra_agent_goal_updates and (agent_id == 0 or agent_id ==3 or agent_id ==4 or agent_id ==5 or agent_id ==6 or agent_id ==7 or agent_id ==8 or agent_id ==9)):
+            if agent_id == 1 or agent_id == 0 or agent_id ==3 or agent_id ==4:
                 # Special large circle for agent 1 (the one we control)
                 marker, size, edgecolor = 'o', 100, 'black'
             else:

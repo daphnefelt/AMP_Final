@@ -8,7 +8,7 @@ def manhattan_distance(pos1, pos2):
     return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
 
 
-def benchmark_cbs(grid, agents, num_moves=1000, goal_step=2, optimize_paths=True):
+def benchmark_cbs(grid, agents, num_moves=1000, goal_step=2, optimize_paths=False):
     working_agents = _deepcopy(agents)
     
     # Build initial solution
