@@ -6,6 +6,8 @@ from typing import List, Tuple, Dict, Set, Optional
 from dataclasses import dataclass
 from copy import deepcopy
 
+######### HELPER FUNCTIONS TO SET UP ENVIRONMENT WITH OBSTACLES #########
+
 @dataclass
 class Agent:
     id: int
@@ -13,42 +15,44 @@ class Agent:
     goal: Tuple[float, float]
 
 @dataclass
-class Obstacle:
+class Obstacle: # only convex allowed here
     vertices: List[Tuple[float, float]]
 
+# check if point is inside a convex obstacle
+# uses cross product method
 def point_in_convex_polygon(point: Tuple[float, float], vertices: List[Tuple[float, float]]) -> bool:
-    # Check if a point is inside a convex polygon using the cross product method. Assumes vertices are ordered
     x, y = point
     n = len(vertices)
     
-    # Check if point is on the same side of all edges
+    # to be outside the obstacle, the point has to be on the outside of an edge
     sign = None
     for i in range(n):
+        # grabbing a single edge with 2 vertices
         x1, y1 = vertices[i]
         x2, y2 = vertices[(i + 1) % n]
         
-        # Cross product of edge vector and point vector
+        # Cross product of edge and point, the sign is what side the point is on
+        # kind like having primatives
         cross_product = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)
         
-        if abs(cross_product) < 1e-10:  # Point is on the edge
+        if abs(cross_product) < 1e-10:  # it's on the edge, just ignore
             continue
             
         if sign is None:
             sign = cross_product > 0
         elif (cross_product > 0) != sign:
-            return False
+            return False # point is on a different side of this edge, so outside
     
-    return True
+    return True # point is inside all edges
 
 def create_grid_from_obstacles(workspace_width: float, workspace_height: float, 
                               resolution: float, obstacles: List[Obstacle]) -> Tuple[List[List[int]], float]:
     # makes grid of 1s and 0s representing obstacles from convex polygons
  
-    # Calculate grid dimensions based on workspace size and resolution
     grid_width = int(np.ceil(workspace_width / resolution))
     grid_height = int(np.ceil(workspace_height / resolution))
     
-    # Calculate actual cell size
+    # actual cell size
     actual_cell_size_x = workspace_width / grid_width
     actual_cell_size_y = workspace_height / grid_height
     
@@ -56,11 +60,10 @@ def create_grid_from_obstacles(workspace_width: float, workspace_height: float,
     
     for row in range(grid_height):
         for col in range(grid_width):
-            # Calculate cell center in world coordinates
+            # check for obstacle with cell center in world coordinates
             cell_center_x = (col + 0.5) * actual_cell_size_x
             cell_center_y = (row + 0.5) * actual_cell_size_y
             
-            # Check if cell center is inside any obstacle
             for obstacle in obstacles:
                 if point_in_convex_polygon((cell_center_x, cell_center_y), obstacle.vertices):
                     grid[row][col] = 1
@@ -68,49 +71,40 @@ def create_grid_from_obstacles(workspace_width: float, workspace_height: float,
 
     return grid, actual_cell_size_x
 
+# this is the "prison" layout. Doesn't really look like a prison at all haha
 def create_sample_problem_with_obstacles():
-    # Just makes an example problem with convex polygon obstacles
 
-    # Define workspace dimensions (in world coordinates)
     workspace_width = 20.0
     workspace_height = 15.0
     
-    # Define discretization resolution (cell size in world coordinates)
-    resolution = 0.25  # Each grid cell represents X x X world units
+    resolution = 0.25  # each grid cell is this tall and wide
     
-    # Makes some obstacles as convex polygons (in world coordinates)
-    obstacles = [
-        # Rectangular obstacle in the upper left
+    obstacles = [ # in world coordinates
         Obstacle(vertices=[(2.0, 0), (6.0, 0), (6.0, 4.0), (2.0, 4.0)]),
-        
-        # Triangular obstacle in the middle
         Obstacle(vertices=[(8.0, 6.0), (12.0, 0.5), (10.0, 12.0)]),
-        
-        # Another rectangular obstacle
         Obstacle(vertices=[(15.0, 2.0), (18.0, 2.0), (18.0, 5.0), (15.0, 5.0)]),
-        
-        # Small triangular obstacle
         Obstacle(vertices=[(4.0, 9.0), (7.0, 8.0), (5.0, 11.5)])
     ]
     
-    # Create grid from obstacles
+    # discritize workspace into grid
     grid, cell_size = create_grid_from_obstacles(workspace_width, workspace_height, 
                                                 resolution, obstacles)
     
-    # Convert world coordinates to grid coordinates
+    # just helper to convert goal and start positions from world coords
     def world_to_grid(world_pos: Tuple[float, float]) -> Tuple[int, int]:
         x, y = world_pos
         grid_x = int(x / cell_size)
         grid_y = int(y / cell_size)
-        return (grid_y, grid_x)  # Note: (row, col) format for grid
+        return (grid_y, grid_x)  # row, col
     
-    # Create agents (positions in grid coordinates)
     agents = [
-        Agent(id=0, start=world_to_grid((1.0, 1.0)), goal=world_to_grid((18.0, 13.0))),  # Agent 0
-        Agent(id=1, start=world_to_grid((18.0, 1.0)), goal=world_to_grid((1.0, 13.0))),   # Agent 1
-        Agent(id=2, start=world_to_grid((15.0, 1.0)), goal=world_to_grid((1.0, 1.0))),   # Agent 2
-        Agent(id=3, start=world_to_grid((18.0, 10.0)), goal=world_to_grid((15.0, 1.0))),   # Agent 3
+        Agent(id=0, start=world_to_grid((1.0, 1.0)), goal=world_to_grid((18.0, 13.0))),
+        Agent(id=1, start=world_to_grid((18.0, 1.0)), goal=world_to_grid((1.0, 13.0))),
+        Agent(id=2, start=world_to_grid((15.0, 1.0)), goal=world_to_grid((1.0, 1.0))),
+        Agent(id=3, start=world_to_grid((18.0, 10.0)), goal=world_to_grid((15.0, 1.0))),
     ]
+
+    ## added these checks for debugging, when I changed start/goal positions of agents to impossible positions
 
     # check conflicts
     for a in agents:
@@ -118,29 +112,30 @@ def create_sample_problem_with_obstacles():
             if a.id >= b.id:
                 continue
             if a.start == b.start or a.goal == b.goal:
-                print(f"Conflict in initial positions or goals between Agent {a.id} and Agent {b.id}")
+                print(f"Conflict in init positions or goals: Agent {a.id}, Agent {b.id}")
+
     # check grid validity
     for agent in agents:
         sy, sx = agent.start
         gy, gx = agent.goal
         if grid[sy][sx] == 1:
-            print(f"Agent {agent.id} start position is inside an obstacle!")
+            print(f"Agent {agent.id} start pos inside obstacle")
         if grid[gy][gx] == 1:
-            print(f"Agent {agent.id} goal position is inside an obstacle!")
+            print(f"Agent {agent.id} goal pos inside obstacle")
     
     return grid, agents, obstacles, workspace_width, workspace_height, cell_size
 
+######### CBS SOLVER #########
+
 @dataclass
 class Constraint:
-    # Constraint on agent movement
+    # Constraint on agent movement for a specific time step
     agent_id: int
     time: int
     position: Tuple[float, float]
-    constraint_type: str = "vertex"  # "vertex" or "edge"
 
 @dataclass
 class CBSNode:
-    # Node in the CBS high-level search tree.
     constraints: List[Constraint]
     solution: Dict[int, List[Tuple[int, int]]]
     cost: int
@@ -195,8 +190,7 @@ class ConflictBasedSearch:
         # Create constraint lookup for efficiency
         vertex_constraints = set()
         for c in agent_constraints:
-            if c.constraint_type == "vertex":
-                vertex_constraints.add((c.time, c.position))
+            vertex_constraints.add((c.time, c.position))
         
         # A* search
         open_list = []
@@ -690,7 +684,9 @@ class InteractivePlanner:
         
         agents_seeing_prisoner = []
         for agent in self.agents:
-            distance = abs(self.prisoner_loc[0] - self.agent_current_positions[agent.id][0]) + abs(self.agent_current_positions[agent.id][1] - self.prisoner_loc[1])
+            dx = self.prisoner_loc[0] - self.agent_current_positions[agent.id][0]
+            dy = self.prisoner_loc[1] - self.agent_current_positions[agent.id][1]
+            distance = (dx**2 + dy**2)**0.5  # sqrt(dx^2 + dy^2)
             if distance <= self.detection_radius:
                 agents_seeing_prisoner.append(agent.id)
 
