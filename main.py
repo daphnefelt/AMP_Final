@@ -147,7 +147,11 @@ class InteractivePlanner:
         self.agent_position_objects = {}   # Visual objects for current positions
         self.detection_circles = []  # Visual objects for detection radius circles
         self.no_solution_text = None
+        self.path_lines = []
 
+        self.paused = False
+        self.show_paths = True  # Default to showing paths
+    
         # toggle radius where guards can 'see' the prisoner
         self.detection_radius = 25
         self.prisoner_found = False
@@ -348,6 +352,29 @@ class InteractivePlanner:
         if self.game_over:
             return
         
+        # Save figure when 'f' is pressed
+        if event.key == 'f':
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"game_screenshot_{timestamp}.jpg"
+            self.fig.savefig(filename, dpi=150, bbox_inches='tight')
+            print(f"Screenshot saved as {filename}")
+            return
+        
+        # Pause/resume with 'p'
+        if event.key == 'p':
+            self.paused = not self.paused
+            print(f"Simulation {'PAUSED' if self.paused else 'RESUMED'}")
+            return
+        
+        # Toggle path drawing with 't'
+        if event.key == 't':
+            self.show_paths = not self.show_paths
+            print(f"Path visualization {'ENABLED' if self.show_paths else 'DISABLED'}")
+            # Redraw to immediately show/hide paths
+            self.update_agent_visuals()
+            return
+        
         if event.key not in ['up', 'down', 'left', 'right']:
             return
             
@@ -461,6 +488,12 @@ class InteractivePlanner:
         if self.game_over or not self.current_solution:
             return
         
+        if self.paused:
+            # Update the visual representation
+            self.update_agent_visuals()
+            self.draw_goal_marker()
+            return
+        
         self.current_timestep += 1
         
         # Update each agent's position
@@ -567,6 +600,7 @@ class InteractivePlanner:
                                                 facecolor='red', alpha=0.4, edgecolor='red'))
         
         # self.plot_coverage_goals()
+        self.draw_door()
 
         # Set up plot appearance (this stays constant)
         self.ax.set_xlim(0, self.workspace_width)
@@ -581,7 +615,7 @@ class InteractivePlanner:
         self.goal_marker = None
         self.goal_text = None
         self.draw_goal_marker()
-        
+
     def clear_dynamic_elements(self):
         """Remove only the dynamic elements (current agent positions)."""
         # Remove agent position objects
@@ -595,10 +629,70 @@ class InteractivePlanner:
             circle.remove()
         self.detection_circles.clear()
         
+        # Remove path lines
+        for line in self.path_lines:
+            line.remove()
+        self.path_lines.clear()
+        
         # Remove no solution text if it exists
         if self.no_solution_text:
             self.no_solution_text.remove()
             self.no_solution_text = None
+
+    def draw_agent_paths(self):
+        """Draw the planned paths for all agents with color gradient markers (from current position only)."""
+        if not self.current_solution:
+            return
+        
+        # Define color schemes for each agent
+        agent_color_schemes = {
+            0: ('darkblue', 'cyan'),
+            1: ('darkred', 'yellow'),
+            2: ('darkgreen', 'lime'),
+            3: ('indigo', 'hotpink'),
+            4: ('darkorange', 'yellow')
+        }
+        
+        import matplotlib.colors as mcolors
+        
+        for agent_id, path in self.current_solution.items():
+            if len(path) < 1:
+                continue
+            
+            # Get the remaining path from current timestep onward
+            remaining_path = path[self.current_timestep:] if self.current_timestep < len(path) else [path[-1]]
+            
+            if len(remaining_path) < 1:
+                continue
+            
+            # Get color scheme for this agent
+            start_color, end_color = agent_color_schemes.get(agent_id, ('gray', 'lightgray'))
+            
+            # Convert color names to RGB
+            start_rgb = mcolors.to_rgb(start_color)
+            end_rgb = mcolors.to_rgb(end_color)
+            
+            # Convert remaining path to world coordinates
+            world_path = [self.grid_to_world(pos) for pos in remaining_path]
+            xs = [p[0] for p in world_path]
+            ys = [p[1] for p in world_path]
+            
+            # Draw one marker per timestep with gradient color
+            num_steps = len(remaining_path)
+            for i in range(num_steps):
+                # Interpolate color from start to end
+                t = i / max(1, num_steps - 1)  # 0 to 1
+                r = start_rgb[0] * (1 - t) + end_rgb[0] * t
+                g = start_rgb[1] * (1 - t) + end_rgb[1] * t
+                b = start_rgb[2] * (1 - t) + end_rgb[2] * t
+                marker_color = (r, g, b)
+                
+                # Draw marker with constant size
+                marker = self.ax.scatter(xs[i], ys[i], 
+                                        c=[marker_color], s=30,
+                                        marker='o', alpha=0.7, 
+                                        zorder=4, edgecolors='white', linewidth=0.5)
+                self.path_lines.append(marker)
 
     def update_agent_visuals(self):
         """Update the visual representation of current agent positions."""
@@ -606,6 +700,15 @@ class InteractivePlanner:
         for agent_id, pos_obj in self.agent_position_objects.items():
             if pos_obj:
                 pos_obj.remove()
+        
+        # Clear old path visualizations
+        for line in self.path_lines:
+            line.remove()
+        self.path_lines.clear()
+        
+        # Draw the planned paths first (so they're behind agents)
+        if self.show_paths:
+            self.draw_agent_paths()
         
         # Define colors for agents
         agent_colors = ['blue', 'red', 'green', 'purple', 'orange']
@@ -618,12 +721,10 @@ class InteractivePlanner:
             world_x = (grid_pos[1] + 0.5) * self.cell_size
             world_y = (grid_pos[0] + 0.5) * self.cell_size
             
-            # Create square marker for current position
-            if agent_id == 1 or agent_id == 0 or agent_id ==3 or agent_id ==4:
-                # Special large circle for agent 1 (the one we control)
+            # Create marker for current position
+            if agent_id == 1 or agent_id == 0 or agent_id == 3 or agent_id == 4:
                 marker, size, edgecolor = 'o', 100, 'black'
             else:
-                # Square for other agents
                 marker, size, edgecolor = 's', 100, 'black'
             
             pos_obj = self.ax.scatter(world_x, world_y, c=agent_color, s=size, 
@@ -637,6 +738,30 @@ class InteractivePlanner:
         
         # Update display
         self.fig.canvas.draw_idle()
+
+    def draw_door(self):
+        """Draw a door at the door_loc position."""
+        door_row, door_col = self.door_loc
+        world_x = (door_col + 0.5) * self.cell_size
+        world_y = (door_row + 0.5) * self.cell_size - 0.5
+        
+        # Door dimensions (in world coordinates)
+        door_width = self.cell_size * 5
+        door_height = self.cell_size * 5
+        
+        # Draw door frame (brown rectangle)
+        door_rect = plt.Rectangle((world_x - door_width/2, world_y - door_height/2), 
+                                door_width, door_height,
+                                facecolor='brown', edgecolor='black', 
+                                linewidth=3, zorder=8, alpha=0.8)
+        self.ax.add_patch(door_rect)
+        
+        # Door knob (small circle)
+        knob = plt.Circle((world_x + door_width/3, world_y), 
+                        self.cell_size * 0.15,
+                        color='gold', edgecolor='black', 
+                        linewidth=1, zorder=10)
+        self.ax.add_patch(knob)
     
     def draw_detection_circles(self):
         """Draw detection radius circles around guards in patrol mode."""
