@@ -358,7 +358,7 @@ class ConflictBasedSearch:
         if len(path) < 3:
             return path # too short to have opposing directions
         
-        # build direction sequence
+        # build direction sequence with indices
         directions = []
         for i in range(len(path) - 1):
             dr = path[i+1][0] - path[i][0]
@@ -366,35 +366,67 @@ class ConflictBasedSearch:
             if dr != 0 or dc != 0:
                 directions.append((dr, dc, i))
         
-        # get earliest opposing pair
-        earliest_conflict = None
-        for i in range(len(directions) - 1):
-            for j in range(i + 1, len(directions)):
-                dr1, dc1, idx1 = directions[i]
-                dr2, dc2, idx2 = directions[j]
-                
-                # Check if opposing
-                if (dr1 == -dr2 and dr1 != 0) or (dc1 == -dc2 and dc1 != 0):
-                    if earliest_conflict is None or idx1 < earliest_conflict:
-                        earliest_conflict = idx1
-                    break
+        # count up, down, left, right movements
+        up_count = sum(1 for dr, dc, _ in directions if dr == -1)
+        down_count = sum(1 for dr, dc, _ in directions if dr == 1)
+        left_count = sum(1 for dr, dc, _ in directions if dc == -1)
+        right_count = sum(1 for dr, dc, _ in directions if dc == 1)
         
-        if earliest_conflict is not None:
-            print(f"Found opposing directions at index {earliest_conflict}")
-            
-            # temporary agent starting at conflict point and recompute it
-            temp_agent = Agent(
-                id=agent.id,
-                start=path[earliest_conflict],
-                goal=agent.goal
-            )
-            suffix = self.low_level_search(temp_agent, [])
-            
-            if suffix is None:
-                print("Failed to recompute from opposing direction conflict")
-                return None
-            
-            # Combine: keep path up to conflict, add recomputed suffix
-            return path[:earliest_conflict] + suffix
+        # find opposing pairs
+        vertical_conflicts = min(up_count, down_count)
+        horizontal_conflicts = min(left_count, right_count)
+        total_conflicts = vertical_conflicts + horizontal_conflicts
         
-        return path
+        if total_conflicts == 0:
+            return path  # no conflicts
+        
+        print(f"Found {vertical_conflicts} up/down pairs and {horizontal_conflicts} left/right pairs")
+        
+        # find where to start recomputing
+        # work backwards to find the position to split that has enough up/down and left/right moves to remove
+        moves_to_remove = total_conflicts * 2  # each conflict involves 2 moves
+        
+        # work backwards from end of path
+        split_index = len(directions) - 1
+        moves_counted = 0
+        vertical_counted = 0
+        horizontal_counted = 0
+        
+        for i in range(len(directions) - 1, -1, -1):
+            dr, dc, path_idx = directions[i]
+            
+            # count moves that are part of conflicts
+            if dr == -1 and vertical_counted < vertical_conflicts:  # up
+                moves_counted += 1
+                vertical_counted += 0.5  # each pair counts as 1 conflict
+            elif dr == 1 and vertical_counted < vertical_conflicts:  # down
+                moves_counted += 1
+                vertical_counted += 0.5
+            elif dc == -1 and horizontal_counted < horizontal_conflicts:  # left
+                moves_counted += 1
+                horizontal_counted += 0.5
+            elif dc == 1 and horizontal_counted < horizontal_conflicts:  # right
+                moves_counted += 1
+                horizontal_counted += 0.5
+            
+            split_index = path_idx
+            
+            if moves_counted >= moves_to_remove:
+                break
+        
+        print(f"Recomputing from index {split_index}")
+        
+        # temp agent starting at split point and recompute
+        temp_agent = Agent(
+            id=agent.id,
+            start=path[split_index],
+            goal=agent.goal
+        )
+        suffix = self.low_level_search(temp_agent, [])
+        
+        if suffix is None:
+            print("Failed to recompute from opposing direction conflict")
+            return None
+        
+        # combine init path and recomputed suffix
+        return path[:split_index] + suffix

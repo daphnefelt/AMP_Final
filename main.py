@@ -318,6 +318,31 @@ class InteractivePlanner:
         
         return True
     
+    def is_path_clear(self, start: Tuple[int, int], end: Tuple[int, int]) -> bool:
+        """Check if the straight-line path between start and end is obstacle-free using interpolation."""
+        row1, col1 = start
+        row2, col2 = end
+        
+        # Calculate steps needed (use max distance to ensure we check all cells)
+        dr = abs(row2 - row1)
+        dc = abs(col2 - col1)
+        steps = max(dr, dc)
+        
+        if steps == 0:
+            return self.is_valid_goal(end)
+        
+        # Interpolate along the line
+        for i in range(steps + 1):
+            t = i / steps
+            check_row = int(row1 + t * (row2 - row1))
+            check_col = int(col1 + t * (col2 - col1))
+            
+            # Check if this interpolated position is valid (3x3 footprint)
+            if not self.is_valid_goal((check_row, check_col)):
+                return False
+        
+        return True
+    
     def on_key_press(self, event):
         """Handle keyboard input to move agent 1's goal."""
         if self.game_over:
@@ -357,7 +382,7 @@ class InteractivePlanner:
                     break
         
         # Check if new position is valid
-        if self.is_valid_goal(new_goal):
+        if self.is_valid_goal(new_goal) and self.is_path_clear(current_goal, new_goal):
             self.prisoner_loc = new_goal  # update prisoner location
             if self.prisoner_found:
                 agent1.goal = new_goal
@@ -368,7 +393,7 @@ class InteractivePlanner:
                 if self.guard_two_to_door:
                     agent2.goal = self.door_loc  # prisoner exit door location
                 else:
-                    agent2.goal = (new_goal[0] + 2, new_goal[1] - 2)  # get to follow prisoner until another guard reaches them
+                    agent2.goal = (new_goal[0] + 1, new_goal[1] - 1)  # get to follow prisoner until another guard reaches them
                 agent3.goal = (new_goal[0] - 1, new_goal[1] - 1)  # sync agent 3's goal if toggled, but offset to avoid overlap
 
                 self.draw_goal_marker()
@@ -481,7 +506,7 @@ class InteractivePlanner:
                 if self.guard_two_to_door:
                     agent2.goal = self.door_loc  # prisoner exit door location
                 else:
-                    agent2.goal = (self.prisoner_loc[0] + 2, self.prisoner_loc[1] - 2)  # offset to avoid overlap
+                    agent2.goal = (self.prisoner_loc[0] + 1, self.prisoner_loc[1] - 1)  # offset to avoid overlap
                 agent3.goal = (self.prisoner_loc[0] - 1, self.prisoner_loc[1] - 1)  # offset to avoid overlap
                 self.calculate_new_solution(inc_step=False)
             if not self.prisoner_found and self.last_prisoner_found:
