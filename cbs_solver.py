@@ -17,6 +17,8 @@ class Constraint:
     agent_id: int
     time: int
     position: Tuple[float, float]
+    constraint_type: str = "vertex"  # "vertex" or "edge"
+    from_position: Optional[Tuple[float, float]] = None  # For edge constraints
 
 @dataclass
 class CBSNode:
@@ -66,10 +68,14 @@ class ConflictBasedSearch:
 
         agent_constraints = [c for c in constraints if c.agent_id == agent.id] # only grab constraints for this agent
         
-        # add the vertex constraints into a set for faster lookup
+        # Separate vertex and edge constraints, putting in set for faster lookup
         vertex_constraints = set()
+        edge_constraints = set()
         for c in agent_constraints:
-            vertex_constraints.add((c.time, c.position))
+            if c.constraint_type == "vertex":
+                vertex_constraints.add((c.time, c.position))
+            elif c.constraint_type == "edge":
+                edge_constraints.add((c.time, c.from_position, c.position))
         
         open_list = []
         heapq.heappush(open_list, (0, 0, agent.start, [agent.start]))
@@ -90,7 +96,12 @@ class ConflictBasedSearch:
             for next_pos in self.get_neighbors(current_pos):
                 new_g_cost = g_cost + 1 # each move is cost 1
                 
-                if (new_g_cost, next_pos) in vertex_constraints: # skip if not allowed
+                # check vertex constraint
+                if (new_g_cost, next_pos) in vertex_constraints:
+                    continue
+                
+                # Check edge constraint from current_pos to next_pos
+                if (new_g_cost, current_pos, next_pos) in edge_constraints:
                     continue
                 
                 new_f_cost = new_g_cost + self.heuristic(next_pos, agent.goal)
@@ -109,6 +120,7 @@ class ConflictBasedSearch:
         for t in range(max_length):
             agents_at_t = {}
             
+            # check vertex conflicts
             for agent_id, path in solution.items():
                 if t < len(path):
                     pos = path[t]
@@ -117,10 +129,26 @@ class ConflictBasedSearch:
                 
                 if pos in agents_at_t:
                     other_agent = agents_at_t[pos] # found conflict, add it to list
-                    conflicts.append((agent_id, other_agent, t, pos))
+                    conflicts.append(('vertex', agent_id, other_agent, t, pos))
                 else:
                     agents_at_t[pos] = agent_id
         
+            # Check edge conflicts (agents swapping positions)
+            if t > 0:
+                for agent1_id, path1 in solution.items():
+                    pos1_prev = path1[t-1] if t-1 < len(path1) else path1[-1]
+                    pos1_curr = path1[t] if t < len(path1) else path1[-1]
+                    
+                    for agent2_id, path2 in solution.items():
+                        if agent1_id >= agent2_id:  # skip duplicate checks
+                            continue
+                        
+                        pos2_prev = path2[t-1] if t-1 < len(path2) else path2[-1]
+                        pos2_curr = path2[t] if t < len(path2) else path2[-1]
+                        
+                        # Check if agents are passing the same edge in opposite directions
+                        if pos1_prev == pos2_curr and pos1_curr == pos2_prev:
+                            conflicts.append(('edge', agent1_id, agent2_id, t, pos1_prev, pos1_curr))
         return conflicts
     
     # this is the main CBS solver function, but I changed it to accept previous solution for optimization and try to reuse paths
@@ -169,25 +197,52 @@ class ConflictBasedSearch:
                 return current.solution # good to go
             
             conflict = conflicts[0] # grab first conflict
-            agent1_id, agent2_id, conflict_time, position = conflict
             
-            for constrained_agent in [agent1_id, agent2_id]: # want to branch on both agents
-                child = CBSNode(
-                    constraints=deepcopy(current.constraints),
-                    solution=deepcopy(current.solution),
-                    cost=0
-                )
+            if conflict[0] == 'vertex':
+                # vertex conflict: (type, agent1_id, agent2_id, time, position)
+                _, agent1_id, agent2_id, conflict_time, position = conflict
+                
+                for constrained_agent in [agent1_id, agent2_id]:
+                    child = CBSNode(
+                        constraints=deepcopy(current.constraints),
+                        solution=deepcopy(current.solution),
+                        cost=0
+                    )
+                    
+                    constraint = Constraint(constrained_agent, conflict_time, position, "vertex")
+                    child.constraints.append(constraint)
+                    
+                    constrained_agent_obj = next(a for a in self.agents if a.id == constrained_agent)
+                    new_path = self.low_level_search(constrained_agent_obj, child.constraints)
+                    
+                    if new_path is not None:
+                        child.solution[constrained_agent] = new_path
+                        child.cost = sum(len(path) for path in child.solution.values())
+                        heapq.heappush(open_list, child)
 
-                constraint = Constraint(constrained_agent, conflict_time, position)
-                child.constraints.append(constraint)
+            elif conflict[0] == 'edge':
+                # edge conflict: (type, agent1_id, agent2_id, time, from_pos, to_pos)
+                _, agent1_id, agent2_id, conflict_time, from_pos, to_pos = conflict
                 
-                constrained_agent_obj = next(a for a in self.agents if a.id == constrained_agent)
-                new_path = self.low_level_search(constrained_agent_obj, child.constraints) # replan with new constraint
-                
-                if new_path is not None:
-                    child.solution[constrained_agent] = new_path
-                    child.cost = sum(len(path) for path in child.solution.values())
-                    heapq.heappush(open_list, child)
+                # make two child nodes with edge constraints
+                for constrained_agent, from_p, to_p in [(agent1_id, from_pos, to_pos), 
+                                                        (agent2_id, to_pos, from_pos)]:
+                    child = CBSNode(
+                        constraints=deepcopy(current.constraints),
+                        solution=deepcopy(current.solution),
+                        cost=0
+                    )
+                    
+                    constraint = Constraint(constrained_agent, conflict_time, to_p, "edge", from_p)
+                    child.constraints.append(constraint)
+                    
+                    constrained_agent_obj = next(a for a in self.agents if a.id == constrained_agent)
+                    new_path = self.low_level_search(constrained_agent_obj, child.constraints)
+                    
+                    if new_path is not None:
+                        child.solution[constrained_agent] = new_path
+                        child.cost = sum(len(path) for path in child.solution.values())
+                        heapq.heappush(open_list, child)
         
         return None
 
